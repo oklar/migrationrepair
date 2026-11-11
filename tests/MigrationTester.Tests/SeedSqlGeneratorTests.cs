@@ -1,4 +1,5 @@
 using MigrationTester.Planning;
+using MigrationTester.Providers.SqlServer;
 using MigrationTester.Schema;
 using MigrationTester.Seeding;
 using Xunit;
@@ -8,6 +9,8 @@ namespace MigrationTester.Tests;
 
 public sealed class SeedSqlGeneratorTests
 {
+    private static readonly SeedSqlGenerator Sql = new(SqlServerDialect.Instance);
+
     [Fact]
     public void BaselineInsert_skips_columns_sql_server_fills_itself()
     {
@@ -17,7 +20,7 @@ public sealed class SeedSqlGeneratorTests
             Col("RowVersion", "rowversion"),
             Col("Total", "int", computed: true));
 
-        var sql = SeedSqlGenerator.BaselineInsert(table);
+        var sql = Sql.BaselineInsert(table);
 
         Assert.Equal("INSERT INTO [dbo].[Docs] ([Title]) VALUES (N'v1');", sql.Sql);
     }
@@ -30,7 +33,7 @@ public sealed class SeedSqlGeneratorTests
             Col("Name", "nvarchar(50)", nullable: true),
             Col("Status", "nvarchar(20)", hasDefault: true));
 
-        var sql = SeedSqlGenerator.BaselineInsert(table);
+        var sql = Sql.BaselineInsert(table);
 
         Assert.Equal("INSERT INTO [dbo].[Items] ([Name]) VALUES (NULL);", sql.Sql);
     }
@@ -45,7 +48,7 @@ public sealed class SeedSqlGeneratorTests
             ForeignKeys = [ForeignKey("CustomerId", "Customers")]
         };
 
-        var sql = SeedSqlGenerator.BaselineInsert(orders);
+        var sql = Sql.BaselineInsert(orders);
 
         Assert.Equal(
             "INSERT INTO [dbo].[Orders] ([CustomerId], [Note]) SELECT TOP (1) [p0].[Id], NULL FROM [dbo].[Customers] AS [p0];",
@@ -62,7 +65,7 @@ public sealed class SeedSqlGeneratorTests
             ForeignKeys = [ForeignKey("CustomerId", "Customers")]
         };
 
-        var sql = SeedSqlGenerator.BaselineInsert(orders);
+        var sql = Sql.BaselineInsert(orders);
 
         Assert.Equal("INSERT INTO [dbo].[Orders] ([CustomerId]) VALUES (NULL);", sql.Sql);
     }
@@ -70,7 +73,7 @@ public sealed class SeedSqlGeneratorTests
     [Fact]
     public void BaselineInsert_table_with_only_generated_columns_uses_DEFAULT_VALUES()
     {
-        var sql = SeedSqlGenerator.BaselineInsert(Table("Counters", Col("Id", "int", identity: true)));
+        var sql = Sql.BaselineInsert(Table("Counters", Col("Id", "int", identity: true)));
 
         Assert.Equal("INSERT INTO [dbo].[Counters] DEFAULT VALUES;", sql.Sql);
     }
@@ -85,7 +88,7 @@ public sealed class SeedSqlGeneratorTests
             ForeignKeys = [ForeignKey("ParentId", "Nodes")]
         };
 
-        var sql = SeedSqlGenerator.BaselineInsert(nodes);
+        var sql = Sql.BaselineInsert(nodes);
 
         Assert.False(sql.Succeeded);
         Assert.Contains("self-referencing", sql.Failure);
@@ -94,7 +97,7 @@ public sealed class SeedSqlGeneratorTests
     [Fact]
     public void BaselineInsert_fails_for_type_it_cannot_generate()
     {
-        var sql = SeedSqlGenerator.BaselineInsert(Table("T", Col("Id", "int", identity: true), Col("Val", "my_clr_type")));
+        var sql = Sql.BaselineInsert(Table("T", Col("Id", "int", identity: true), Col("Val", "my_clr_type")));
 
         Assert.False(sql.Succeeded);
         Assert.Contains("'Val'", sql.Failure);
@@ -116,7 +119,7 @@ public sealed class SeedSqlGeneratorTests
     [InlineData("geography", "geography::Point(0, 1, 4326)")]
     public void BaselineInsert_generates_value_that_fits_the_type(string sqlType, string expected)
     {
-        var sql = SeedSqlGenerator.BaselineInsert(Table("T", Col("Id", "int", identity: true), Col("Val", sqlType)));
+        var sql = Sql.BaselineInsert(Table("T", Col("Id", "int", identity: true), Col("Val", sqlType)));
 
         Assert.Equal($"INSERT INTO [dbo].[T] ([Val]) VALUES ({expected});", sql.Sql);
     }
@@ -131,7 +134,7 @@ public sealed class SeedSqlGeneratorTests
             UniqueKeys = [PrimaryKey("Id")]
         };
 
-        var sql = SeedSqlGenerator.CopyRow(items, ["Code"], [], ordinal: 2);
+        var sql = Sql.CopyRow(items, ["Code"], [], ordinal: 2);
 
         Assert.Equal("INSERT INTO [dbo].[Items] ([Code]) SELECT TOP (1) [Code] FROM [dbo].[Items];", sql.Sql);
     }
@@ -146,7 +149,7 @@ public sealed class SeedSqlGeneratorTests
             UniqueKeys = [PrimaryKey("Id")]
         };
 
-        var sql = SeedSqlGenerator.CopyRow(accounts, ["Email"], [], ordinal: 2);
+        var sql = Sql.CopyRow(accounts, ["Email"], [], ordinal: 2);
 
         Assert.Equal(
             "INSERT INTO [dbo].[Accounts] ([Id], [Email]) SELECT TOP (1) '00000000-0000-0000-0000-000000000002', [Email] FROM [dbo].[Accounts];",
@@ -163,7 +166,7 @@ public sealed class SeedSqlGeneratorTests
             UniqueKeys = [PrimaryKey("Id"), Unique("IX_Items_Slug", "Slug")]
         };
 
-        var sql = SeedSqlGenerator.CopyRow(items, ["Code"], [new ColumnValue("Name", "NULL")], ordinal: 3);
+        var sql = Sql.CopyRow(items, ["Code"], [new ColumnValue("Name", "NULL")], ordinal: 3);
 
         Assert.Equal(
             "INSERT INTO [dbo].[Items] ([Code], [Slug], [Name]) SELECT TOP (1) [Code], N'v3', NULL FROM [dbo].[Items];",
@@ -175,20 +178,20 @@ public sealed class SeedSqlGeneratorTests
     {
         var postTags = PostTags();
 
-        var sql = SeedSqlGenerator.CopyRow(postTags, ["PostId"], [], ordinal: 2);
+        var sql = Sql.CopyRow(postTags, ["PostId"], [], ordinal: 2);
 
         Assert.Equal(
             "INSERT INTO [dbo].[PostTags] ([PostId], [TagId]) SELECT TOP (1) [PostId], "
             + "(SELECT [p].[Id] FROM [dbo].[Tags] AS [p] WHERE NOT EXISTS (SELECT 1 FROM [dbo].[PostTags] AS [d] WHERE [d].[TagId] = [p].[Id]) "
             + "ORDER BY [p].[Id] OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY) FROM [dbo].[PostTags];",
             sql.Sql);
-        Assert.Equal([new TableName("dbo", "Tags")], SeedSqlGenerator.PrincipalsForCopies(postTags, ["PostId"], []));
+        Assert.Equal([new TableName("dbo", "Tags")], Sql.PrincipalsForCopies(postTags, ["PostId"], []));
     }
 
     [Fact]
     public void CopyRows_take_a_different_unreferenced_principal_key_per_copy()
     {
-        var sql = SeedSqlGenerator.CopyRows(PostTags(), ["TagId"], [], [2, 3]);
+        var sql = Sql.CopyRows(PostTags(), ["TagId"], [], [2, 3]);
 
         Assert.True(sql.Succeeded, sql.Failure);
         Assert.Contains("CASE [n].[k] WHEN 1 THEN (SELECT [p].[Id] FROM [dbo].[Posts] AS [p]", sql.Sql, StringComparison.Ordinal);
@@ -207,10 +210,10 @@ public sealed class SeedSqlGeneratorTests
             ForeignKeys = [ForeignKey("PostId", "Posts"), ForeignKey("TagId", "Tags")]
         };
 
-        var sql = SeedSqlGenerator.CopyRow(postTags, [], [], ordinal: 2);
+        var sql = Sql.CopyRow(postTags, [], [], ordinal: 2);
 
         Assert.Equal("INSERT INTO [dbo].[PostTags] ([PostId], [TagId], [Position]) SELECT TOP (1) [PostId], [TagId], 1000002 FROM [dbo].[PostTags];", sql.Sql);
-        Assert.Empty(SeedSqlGenerator.PrincipalsForCopies(postTags, [], []));
+        Assert.Empty(Sql.PrincipalsForCopies(postTags, [], []));
     }
 
     [Fact]
@@ -233,11 +236,11 @@ public sealed class SeedSqlGeneratorTests
             ]
         };
 
-        var sql = SeedSqlGenerator.CopyRow(grades, ["StudentId"], [], ordinal: 2);
+        var sql = Sql.CopyRow(grades, ["StudentId"], [], ordinal: 2);
 
         Assert.False(sql.Succeeded);
         Assert.Contains("'PK'", sql.Failure);
-        Assert.Empty(SeedSqlGenerator.PrincipalsForCopies(grades, ["StudentId"], []));
+        Assert.Empty(Sql.PrincipalsForCopies(grades, ["StudentId"], []));
     }
 
     [Fact]
@@ -250,7 +253,7 @@ public sealed class SeedSqlGeneratorTests
             UniqueKeys = [PrimaryKey("Id")]
         };
 
-        var sql = SeedSqlGenerator.CopyRows(users, ["Email"], [new ColumnValue("Email", "N'v1'")], [2, 3]);
+        var sql = Sql.CopyRows(users, ["Email"], [new ColumnValue("Email", "N'v1'")], [2, 3]);
 
         Assert.Equal(
             "INSERT INTO [dbo].[Users] ([Id], [Email], [Name]) SELECT "
@@ -273,7 +276,7 @@ public sealed class SeedSqlGeneratorTests
             NotNullFilterColumns = ["Email", "ProfileId"]
         };
 
-        Assert.True(SeedSqlGenerator.TryGetFilterValues(scenario, users, out var values, out _));
+        Assert.True(Sql.TryGetFilterValues(scenario, users, out var values, out _));
         Assert.Equal(
             [new ColumnValue("Email", "N'v1'"), new ColumnValue("ProfileId", "(SELECT TOP (1) [Id] FROM [dbo].[Profiles])")],
             values);
@@ -282,7 +285,7 @@ public sealed class SeedSqlGeneratorTests
     [Fact]
     public void UpdateOneRow_sets_values_on_a_single_row()
     {
-        string sql = SeedSqlGenerator.UpdateOneRow(Table("Items"), [new ColumnValue("Name", "NULL"), new ColumnValue("Qty", "32768")]);
+        string sql = Sql.UpdateOneRow(Table("Items"), [new ColumnValue("Name", "NULL"), new ColumnValue("Qty", "32768")]);
 
         Assert.Equal("UPDATE TOP (1) [dbo].[Items] SET [Name] = NULL, [Qty] = 32768;", sql);
     }
@@ -292,7 +295,7 @@ public sealed class SeedSqlGeneratorTests
     {
         var table = Table("Items", Col("Name", "nvarchar(50)", nullable: true));
 
-        Assert.True(SeedSqlGenerator.TryGetBadValues(Scenario(ScenarioKind.NonNullableColumnWithNull, "Name"), table, out var values, out _));
+        Assert.True(Sql.TryGetBadValues(Scenario(ScenarioKind.NonNullableColumnWithNull, "Name"), table, out var values, out _));
         Assert.Equal([new ColumnValue("Name", "NULL")], values);
     }
 
@@ -301,7 +304,7 @@ public sealed class SeedSqlGeneratorTests
     {
         var table = Table("Items", Col("Name", "nvarchar(50)"));
 
-        Assert.False(SeedSqlGenerator.TryGetBadValues(Scenario(ScenarioKind.NonNullableColumnWithNull, "Name"), table, out _, out string? failure));
+        Assert.False(Sql.TryGetBadValues(Scenario(ScenarioKind.NonNullableColumnWithNull, "Name"), table, out _, out string? failure));
         Assert.Contains("already NOT NULL", failure);
     }
 
@@ -311,7 +314,7 @@ public sealed class SeedSqlGeneratorTests
         var table = Table("Orders", Col("Id", "int"));
         var scenario = Scenario(ScenarioKind.ForeignKeyOrphan, "CustomerId") with { ExistingRowsSuffice = true };
 
-        Assert.True(SeedSqlGenerator.TryGetBadValues(scenario, table, out var values, out _));
+        Assert.True(Sql.TryGetBadValues(scenario, table, out var values, out _));
         Assert.Empty(values);
     }
 
@@ -321,7 +324,7 @@ public sealed class SeedSqlGeneratorTests
         var table = Table("Products", Col("Code", "nvarchar(100)"));
         var scenario = Scenario(ScenarioKind.MaxLengthExceededAfterShrink, "Code") with { NewMaxLength = 60 };
 
-        Assert.True(SeedSqlGenerator.TryGetBadValues(scenario, table, out var values, out _));
+        Assert.True(Sql.TryGetBadValues(scenario, table, out var values, out _));
         Assert.Equal("REPLICATE(CAST(N'x' AS nvarchar(max)), 61)", Assert.Single(values).Value);
     }
 
@@ -331,7 +334,7 @@ public sealed class SeedSqlGeneratorTests
         var table = Table("Products", Col("Code", "nvarchar(30)"));
         var scenario = Scenario(ScenarioKind.MaxLengthExceededAfterShrink, "Code") with { NewMaxLength = 60 };
 
-        Assert.False(SeedSqlGenerator.TryGetBadValues(scenario, table, out _, out string? failure));
+        Assert.False(Sql.TryGetBadValues(scenario, table, out _, out string? failure));
         Assert.Contains("cannot hold more than 60", failure);
     }
 
@@ -344,7 +347,7 @@ public sealed class SeedSqlGeneratorTests
     {
         var table = Table("Orders", Col("CustomerId", type));
 
-        Assert.True(SeedSqlGenerator.TryGetBadValues(Scenario(ScenarioKind.ForeignKeyOrphan, "CustomerId"), table, out var values, out _));
+        Assert.True(Sql.TryGetBadValues(Scenario(ScenarioKind.ForeignKeyOrphan, "CustomerId"), table, out var values, out _));
         Assert.Equal(expected, Assert.Single(values).Value);
     }
 
@@ -364,7 +367,7 @@ public sealed class SeedSqlGeneratorTests
         };
 
         Assert.Equal("FK_ShelfId", SeedSqlGenerator.ExistingForeignKey(scenario, boxes)?.Name);
-        Assert.True(SeedSqlGenerator.TryGetBadValues(scenario, boxes, out var values, out _));
+        Assert.True(Sql.TryGetBadValues(scenario, boxes, out var values, out _));
         const string shelfNoRackHas =
             "(SELECT TOP (1) [p].[Id] FROM [dbo].[Shelves] AS [p] WHERE NOT EXISTS (SELECT 1 FROM [dbo].[Racks] AS [n] WHERE [n].[Id] = [p].[Id]) ORDER BY [p].[Id])";
         Assert.Equal([new ColumnValue("ShelfId", shelfNoRackHas, Lookup: true)], values);
@@ -372,10 +375,10 @@ public sealed class SeedSqlGeneratorTests
         // When no shelf qualifies the statement plants nothing, instead of NULL.
         Assert.Equal(
             $"UPDATE TOP (1) [dbo].[Boxes] SET [ShelfId] = {shelfNoRackHas} WHERE {shelfNoRackHas} IS NOT NULL;",
-            SeedSqlGenerator.UpdateOneRow(boxes, values));
+            Sql.UpdateOneRow(boxes, values));
         Assert.Equal(
             $"INSERT INTO [dbo].[Boxes] ([ShelfId]) SELECT TOP (1) {shelfNoRackHas} FROM [dbo].[Boxes] WHERE {shelfNoRackHas} IS NOT NULL;",
-            SeedSqlGenerator.CopyRow(boxes, [], values, ordinal: 2).Sql);
+            Sql.CopyRow(boxes, [], values, ordinal: 2).Sql);
     }
 
     [Fact]
@@ -396,7 +399,7 @@ public sealed class SeedSqlGeneratorTests
                 }
             ]
         };
-        var scenario = new MigrationScenario
+        var scenario = new MigrationScenario(SqlServerDialect.Instance)
         {
             Kind = ScenarioKind.ForeignKeyOrphan,
             Name = "test",
@@ -407,7 +410,7 @@ public sealed class SeedSqlGeneratorTests
             PrincipalColumns = ["StockCode", "StockRegion"]
         };
 
-        Assert.True(SeedSqlGenerator.TryGetBadValues(scenario, parts, out var values, out _));
+        Assert.True(Sql.TryGetBadValues(scenario, parts, out var values, out _));
 
         Assert.Equal(["Code", "Region"], values.Select(static v => v.Column));
         Assert.StartsWith("(SELECT TOP (1) [p].[CatalogCode] FROM [dbo].[Catalog]", values[0].Value, StringComparison.Ordinal);
@@ -433,7 +436,7 @@ public sealed class SeedSqlGeneratorTests
     [InlineData("date", 2, null)]
     public void SeparateKeyValue_stays_clear_of_ordinary_seed_keys(string type, int ordinal, string? expected)
     {
-        Assert.Equal(expected, SqlLiterals.SeparateKeyValue(SqlType.Parse(type)!.Value, ordinal));
+        Assert.Equal(expected, SqlServerDialect.Instance.SeparateKeyValue(SqlServerDialect.Instance.ParseType(type)!.Value, ordinal));
     }
 
     [Fact]
@@ -441,7 +444,7 @@ public sealed class SeedSqlGeneratorTests
     {
         var desks = Desks("uniqueidentifier", identity: false);
 
-        Assert.True(SeedSqlGenerator.TryGetSeparateKey(desks, ["Id"], 2, out var values, out string? reseed, out _));
+        Assert.True(Sql.TryGetSeparateKey(desks, ["Id"], 2, out var values, out string? reseed, out _));
 
         var key = Assert.Single(values);
         Assert.Equal(new ColumnValue("Id", "'00000000-0000-0000-0001-000000000002'", Unique: true), key);
@@ -452,8 +455,8 @@ public sealed class SeedSqlGeneratorTests
             "INSERT INTO [dbo].[Desks] ([Id], [EmployeeId]) SELECT TOP (1) '00000000-0000-0000-0001-000000000002', "
             + "(SELECT [p].[Id] FROM [dbo].[Employees] AS [p] WHERE NOT EXISTS (SELECT 1 FROM [dbo].[Desks] AS [d] WHERE [d].[EmployeeId] = [p].[Id]) "
             + "ORDER BY [p].[Id] OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY) FROM [dbo].[Desks];",
-            SeedSqlGenerator.CopyRow(desks, [], values, ordinal: 3).Sql);
-        Assert.Equal([new TableName("dbo", "Employees")], SeedSqlGenerator.PrincipalsForCopies(desks, [], values));
+            Sql.CopyRow(desks, [], values, ordinal: 3).Sql);
+        Assert.Equal([new TableName("dbo", "Employees")], Sql.PrincipalsForCopies(desks, [], values));
     }
 
     [Fact]
@@ -461,7 +464,7 @@ public sealed class SeedSqlGeneratorTests
     {
         var desks = Desks("int", identity: true);
 
-        Assert.True(SeedSqlGenerator.TryGetSeparateKey(desks, ["Id"], 2, out var values, out string? reseed, out _));
+        Assert.True(Sql.TryGetSeparateKey(desks, ["Id"], 2, out var values, out string? reseed, out _));
 
         Assert.Empty(values);
         Assert.Equal(
@@ -482,7 +485,7 @@ public sealed class SeedSqlGeneratorTests
             ForeignKeys = [ForeignKey("EmployeeId", "Employees")]
         };
 
-        Assert.False(SeedSqlGenerator.TryGetSeparateKey(desks, [column], 2, out _, out _, out string? failure));
+        Assert.False(Sql.TryGetSeparateKey(desks, [column], 2, out _, out _, out string? failure));
         Assert.Contains(reason, failure);
     }
 
@@ -492,7 +495,7 @@ public sealed class SeedSqlGeneratorTests
         var table = Table("Measurements", Col("Quantity", "int"));
         var scenario = Scenario(ScenarioKind.ColumnTypeConversionIncompatible, "Quantity") with { SeedValue = "32768" };
 
-        Assert.True(SeedSqlGenerator.TryGetBadValues(scenario, table, out var values, out _));
+        Assert.True(Sql.TryGetBadValues(scenario, table, out var values, out _));
         Assert.Equal([new ColumnValue("Quantity", "32768")], values);
     }
 
@@ -502,9 +505,9 @@ public sealed class SeedSqlGeneratorTests
         var table = Table("Products", Col("Price", "decimal(10,2)"));
         var scenario = Scenario(ScenarioKind.CheckConstraintViolation, "Price") with { SeedValue = "0" };
 
-        Assert.True(SeedSqlGenerator.TryGetBadValues(scenario, table, out var values, out _));
+        Assert.True(Sql.TryGetBadValues(scenario, table, out var values, out _));
         Assert.Equal([new ColumnValue("Price", "0")], values);
-        Assert.Equal("UPDATE TOP (1) [dbo].[Products] SET [Price] = 0;", SeedSqlGenerator.UpdateOneRow(table, values));
+        Assert.Equal("UPDATE TOP (1) [dbo].[Products] SET [Price] = 0;", Sql.UpdateOneRow(table, values));
     }
 
     [Fact]
@@ -512,7 +515,7 @@ public sealed class SeedSqlGeneratorTests
     {
         var table = Table("Products", Col("Price", "decimal(10,2)"));
 
-        Assert.False(SeedSqlGenerator.TryGetBadValues(Scenario(ScenarioKind.CheckConstraintViolation, "Price"), table, out _, out string? failure));
+        Assert.False(Sql.TryGetBadValues(Scenario(ScenarioKind.CheckConstraintViolation, "Price"), table, out _, out string? failure));
         Assert.Contains("breaks this check constraint", failure);
     }
 
@@ -521,12 +524,12 @@ public sealed class SeedSqlGeneratorTests
     {
         var table = Table("Orders", Col("Id", "int", identity: true));
 
-        Assert.True(SeedSqlGenerator.TryGetBadValues(Scenario(ScenarioKind.NotNullColumnAddedWithoutDefault, "Status"), table, out var values, out _));
+        Assert.True(Sql.TryGetBadValues(Scenario(ScenarioKind.NotNullColumnAddedWithoutDefault, "Status"), table, out var values, out _));
         Assert.Empty(values);
     }
 
     private static MigrationScenario Scenario(ScenarioKind kind, string column) =>
-        new() { Kind = kind, Name = "test", Table = "T", Columns = [column] };
+        new(SqlServerDialect.Instance) { Kind = kind, Name = "test", Table = "T", Columns = [column] };
 
     private static TableMetadata Desks(string keyType, bool identity) => new()
     {

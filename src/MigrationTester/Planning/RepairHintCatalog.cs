@@ -1,11 +1,9 @@
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
-using MigrationTester.Schema;
-using MigrationTester.Seeding;
 
 namespace MigrationTester.Planning;
 
 /// <summary>
-/// SQL Server-oriented repair patterns for failed migrations.
+/// Repair patterns for failed migrations, in the scenario's SQL dialect.
 /// </summary>
 internal static class RepairHintCatalog
 {
@@ -33,61 +31,42 @@ internal static class RepairHintCatalog
     /// </summary>
     private static string LossyConversion(MigrationScenario s)
     {
+        var sql = s.Dialect;
         var alter = s.SourceOperation as AlterColumnOperation;
-        string col = SqlDialect.Q(alter?.Name ?? s.Columns[0]);
-        string table = alter is null ? SqlDialect.Q(s.Schema, s.Table) : SqlDialect.Q(alter.Schema, alter.Table);
+        string col = sql.Quote(alter?.Name ?? s.Columns[0]);
+        string table = alter is null ? sql.Quote(s.Schema, s.Table) : sql.Quote(alter.Schema, alter.Table);
         string oldT = s.OldColumnType ?? "?";
         string newT = s.NewColumnType ?? "?";
-        var from = SqlType.Parse(oldT);
-        var to = SqlType.Parse(newT);
-
-        string keep = (from, to) switch
-        {
-            ({ IsString: true }, { IsString: true }) =>
-                $"-- To keep every character, keep a Unicode type (nvarchar), or give {col} a UTF-8 collation (e.g. Latin1_General_100_CI_AS_SC_UTF8).",
-            ({ Name: "datetimeoffset" }, _) =>
-                $"-- To keep the moment in time instead of the local clock time, convert to UTC first: UPDATE {table} SET {col} = SWITCHOFFSET({col}, '+00:00');",
-            ({ Name: "float" or "real" or "money" or "smallmoney" or "datetime" } source, { IsString: true }) =>
-                $"""
-                -- To keep every digit, add the new column instead, copy with CONVERT({newT}, {col}, {Style(source)}), drop {col} and rename the new one.
-                """,
-            _ => "-- To keep every value, keep a type that holds them."
-        };
 
         return $"""
-            -- {col} changes from {oldT} to {newT}, and SQL Server changes values the new type cannot hold, without an error.
+            -- {col} changes from {oldT} to {newT}, which changes values the new type cannot hold, without an error.
             -- If that is intended, change them yourself before the AlterColumn (migrationBuilder.Sql), so the migration says so:
             UPDATE {table} SET {col} = CAST(CAST({col} AS {newT}) AS {oldT}) WHERE {col} IS NOT NULL;
-            {keep}
+            {sql.KeepValuesHint(sql.ParseType(oldT), sql.ParseType(newT), table, col)}
             """;
-
-        static string Style(SqlType type) => type.Name switch
-        {
-            "float" or "real" => "3",
-            "money" or "smallmoney" => "2",
-            _ => "121"
-        };
     }
 
     private static string DuplicateUnique(MigrationScenario s)
     {
-        string cols = string.Join(", ", s.Columns.Select(c => SqlDialect.Q(c)));
-        string table = SqlDialect.Q(s.Schema, s.Table);
+        var sql = s.Dialect;
+        string cols = string.Join(", ", s.Columns.Select(sql.Quote));
+        string table = sql.Quote(s.Schema, s.Table);
         return $"""
             -- Deduplicate before creating the unique index/constraint.
             -- Example: keep one row per distinct ({cols}), e.g. lowest primary key:
             -- 1) Identify duplicates (adjust PK column name):
-            -- SELECT {cols}, MIN([Id]) AS keep_id FROM {table} GROUP BY {cols} HAVING COUNT(*) > 1;
-            -- 2) Delete extras, e.g. with ROW_NUMBER() OVER (PARTITION BY ... ORDER BY [Id]) AS rn then DELETE WHERE rn > 1.
+            -- SELECT {cols}, MIN({sql.Quote("Id")}) AS keep_id FROM {table} GROUP BY {cols} HAVING COUNT(*) > 1;
+            -- 2) Delete extras, e.g. with ROW_NUMBER() OVER (PARTITION BY ... ORDER BY {sql.Quote("Id")}) AS rn then DELETE WHERE rn > 1.
             """;
     }
 
     private static string ForeignKeyOrphan(MigrationScenario s)
     {
-        string dep = SqlDialect.Q(s.Schema, s.Table);
-        string principal = s.PrincipalTable is { } p ? SqlDialect.Q(s.PrincipalSchema, p) : "[PrincipalTable]";
-        string childCols = string.Join(", ", s.Columns.Select(SqlDialect.Q));
-        string parentCols = string.Join(", ", (s.PrincipalColumns ?? []).Select(SqlDialect.Q));
+        var sql = s.Dialect;
+        string dep = sql.Quote(s.Schema, s.Table);
+        string principal = s.PrincipalTable is { } p ? sql.Quote(s.PrincipalSchema, p) : sql.Quote("PrincipalTable");
+        string childCols = string.Join(", ", s.Columns.Select(sql.Quote));
+        string parentCols = string.Join(", ", (s.PrincipalColumns ?? []).Select(sql.Quote));
         return $"""
             -- Remove or fix rows in {dep} whose ({childCols}) do not exist in {principal} ({parentCols}).
             -- Pattern: DELETE FROM {dep} c WHERE NOT EXISTS (
@@ -98,8 +77,8 @@ internal static class RepairHintCatalog
 
     private static string NonNullable(MigrationScenario s)
     {
-        string col = SqlDialect.Q(s.Columns[0]);
-        string table = SqlDialect.Q(s.Schema, s.Table);
+        string col = s.Dialect.Quote(s.Columns[0]);
+        string table = s.Dialect.Quote(s.Schema, s.Table);
         return $"""
             -- Column {col} becomes NOT NULL: set a default for existing NULLs before the ALTER.
             UPDATE {table} SET {col} = <sentinel_or_derived_value> WHERE {col} IS NULL;
@@ -108,11 +87,11 @@ internal static class RepairHintCatalog
 
     private static string MaxLength(MigrationScenario s)
     {
-        string col = SqlDialect.Q(s.Columns[0]);
-        string table = SqlDialect.Q(s.Schema, s.Table);
+        string col = s.Dialect.Quote(s.Columns[0]);
+        string table = s.Dialect.Quote(s.Schema, s.Table);
         string n = s.NewMaxLength?.ToString() ?? "?";
         return $"""
-            UPDATE {table} SET {col} = LEFT({col}, {n}) WHERE LEN({col}) > {n};
+            UPDATE {table} SET {col} = LEFT({col}, {n}) WHERE {s.Dialect.LengthOf(col)} > {n};
             """;
     }
 
@@ -120,9 +99,9 @@ internal static class RepairHintCatalog
     {
         if (s.SourceOperation is AddCheckConstraintOperation { Sql: { Length: > 0 } predicate } chk)
         {
-            string table = SqlDialect.Q(s.Schema, s.Table);
+            string table = s.Dialect.Quote(s.Schema, s.Table);
             return $"""
-                -- CHECK constraint [{chk.Name}]: update or delete the rows that fail ({predicate}) before adding it.
+                -- CHECK constraint {s.Dialect.Quote(chk.Name)}: update or delete the rows that fail ({predicate}) before adding it.
                 -- Find them: SELECT * FROM {table} WHERE NOT ({predicate});
                 """;
         }
@@ -136,35 +115,36 @@ internal static class RepairHintCatalog
 
     private static string NotNullAddColumn(MigrationScenario s)
     {
-        string col = SqlDialect.Q(s.Columns[0]);
-        string table = SqlDialect.Q(s.Schema, s.Table);
+        string col = s.Dialect.Quote(s.Columns[0]);
+        string table = s.Dialect.Quote(s.Schema, s.Table);
         return $"""
             -- Column {col} is added as NOT NULL without a default value.
             -- Existing rows cannot satisfy the constraint. Either:
             -- 1) Add a DEFAULT in the migration: .HasDefaultValue(...) / .HasDefaultValueSql(...)
             -- 2) Split into two steps: add as nullable, UPDATE with a value, then ALTER to NOT NULL.
-            ALTER TABLE {table} ADD {col} <type> NOT NULL CONSTRAINT [DF_{s.Table}_{s.Columns[0]}] DEFAULT <value>;
+            {s.Dialect.AddColumnWithDefault(table, col, $"DF_{s.Table}_{s.Columns[0]}")}
             """;
     }
 
     private static string TypeConversion(MigrationScenario s)
     {
-        string col = SqlDialect.Q(s.Columns[0]);
-        string table = SqlDialect.Q(s.Schema, s.Table);
+        string col = s.Dialect.Quote(s.Columns[0]);
+        string table = s.Dialect.Quote(s.Schema, s.Table);
         string oldT = s.OldColumnType ?? "?";
         string newT = s.NewColumnType ?? "?";
+        string fails = s.Dialect.DoesNotConvert(col, newT);
         return $"""
             -- Column {col} changes from {oldT} to {newT}.
             -- Existing data may not be convertible. Before altering:
-            -- 1) Find unconvertible rows: SELECT * FROM {table} WHERE TRY_CAST({col} AS {newT}) IS NULL AND {col} IS NOT NULL;
-            -- 2) Fix or remove them: UPDATE {table} SET {col} = <safe_value> WHERE TRY_CAST({col} AS {newT}) IS NULL;
+            -- 1) Find unconvertible rows: SELECT * FROM {table} WHERE {fails} AND {col} IS NOT NULL;
+            -- 2) Fix or remove them: UPDATE {table} SET {col} = <safe_value> WHERE {fails};
             """;
     }
 
     private static string PrecisionOverflow(MigrationScenario s)
     {
-        string col = SqlDialect.Q(s.Columns[0]);
-        string table = SqlDialect.Q(s.Schema, s.Table);
+        string col = s.Dialect.Quote(s.Columns[0]);
+        string table = s.Dialect.Quote(s.Schema, s.Table);
         int newP = s.NewPrecision ?? 0;
         int newS = s.NewScale ?? 0;
         int intDigits = newP - newS;

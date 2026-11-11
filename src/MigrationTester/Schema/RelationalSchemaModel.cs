@@ -1,7 +1,10 @@
+using MigrationTester.Providers;
+
 namespace MigrationTester.Schema;
 
 /// <summary>
-/// Schema-qualified table name. Comparison ignores case, matching SQL Server's default collation.
+/// Schema-qualified table name. Comparison ignores case, matching SQL Server's default collation; PostgreSQL tables
+/// whose names differ only in case are not told apart.
 /// </summary>
 internal readonly record struct TableName(string Schema, string Name)
 {
@@ -36,7 +39,7 @@ internal sealed class ColumnMetadata
     /// </summary>
     public int? CodePage { get; init; }
 
-    /// <summary>False for columns SQL Server fills itself (identity, rowversion, computed, period columns).</summary>
+    /// <summary>False for columns the database fills itself (identity, rowversion, computed, period columns).</summary>
     public bool IsInsertable => !IsIdentity && !IsComputed && !IsGeneratedAlways && !Type.IsRowVersion;
 }
 
@@ -114,9 +117,10 @@ internal sealed class RelationalSchemaModel
 {
     private Dictionary<TableName, TableMetadata>? _byName;
 
-    public static RelationalSchemaModel Empty { get; } = new() { DefaultSchema = "dbo", Tables = [] };
+    /// <summary>The SQL of the database the schema was read from.</summary>
+    public required SqlDialect Dialect { get; init; }
 
-    /// <summary>Schema that unqualified names resolve to (<c>SCHEMA_NAME()</c> of the connection).</summary>
+    /// <summary>Schema that unqualified names resolve to (e.g. <c>SCHEMA_NAME()</c> of the connection).</summary>
     public required string DefaultSchema { get; init; }
 
     public required IReadOnlyList<TableMetadata> Tables { get; init; }
@@ -126,6 +130,10 @@ internal sealed class RelationalSchemaModel
 
     /// <summary>Code pages of the collations the migration names, by collation name.</summary>
     public IReadOnlyDictionary<string, int> CodePages { get; init; } = new Dictionary<string, int>();
+
+    /// <summary>No tables, as before the first migration.</summary>
+    public static RelationalSchemaModel Empty(SqlDialect dialect, string defaultSchema)
+        => new() { Dialect = dialect, DefaultSchema = defaultSchema, Tables = [] };
 
     /// <summary>
     /// Code page of <paramref name="collation"/>, the database default's when it is null, or null when the collation

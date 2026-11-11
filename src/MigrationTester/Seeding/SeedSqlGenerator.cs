@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using MigrationTester.Planning;
+using MigrationTester.Providers;
 using MigrationTester.Schema;
 
 namespace MigrationTester.Seeding;
@@ -28,9 +29,10 @@ internal readonly record struct ColumnValue(string Column, string Value, bool Lo
 /// keys copy a principal row's key, single-row UPDATEs that plant a bad value, and row copies that
 /// keep chosen columns identical while giving every existing unique key a new value.
 /// </summary>
-internal static class SeedSqlGenerator
+/// <param name="sql">The dialect the statements are written in.</param>
+internal sealed class SeedSqlGenerator(SqlDialect sql)
 {
-    public static SeedSql BaselineInsert(TableMetadata table)
+    public SeedSql BaselineInsert(TableMetadata table)
     {
         var fromPrincipal = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var sources = new List<string>();
@@ -47,11 +49,11 @@ internal static class SeedSqlGenerator
                 return SeedSql.Fail($"the first row cannot satisfy the required self-referencing foreign key '{fk.Name}'");
             }
 
-            string alias = SqlDialect.Q($"p{sources.Count}");
-            sources.Add($"{SqlDialect.Q(fk.PrincipalTable)} AS {alias}");
+            string alias = sql.Quote($"p{sources.Count}");
+            sources.Add($"{sql.Quote(fk.PrincipalTable)} AS {alias}");
             for (int i = 0; i < fk.Columns.Count; i++)
             {
-                fromPrincipal.TryAdd(fk.Columns[i], $"{alias}.{SqlDialect.Q(fk.PrincipalColumns[i])}");
+                fromPrincipal.TryAdd(fk.Columns[i], $"{alias}.{sql.Quote(fk.PrincipalColumns[i])}");
             }
         }
 
@@ -64,7 +66,7 @@ internal static class SeedSqlGenerator
                 ?? (c.IsNullable ? "NULL" : null)
                 ?? (c.HasDefault
                     ? ""
-                    : keyColumns.Contains(c.Name) ? SqlLiterals.KeyValue(c.Type, ordinal: 1) : SqlLiterals.Value(c.Type, ordinal: 1));
+                    : keyColumns.Contains(c.Name) ? sql.KeyValue(c.Type, ordinal: 1) : sql.Value(c.Type, ordinal: 1));
             if (value is null)
             {
                 return SeedSql.Fail($"no value can be generated for column '{c.Name}' of type {c.Type}");
@@ -78,40 +80,40 @@ internal static class SeedSqlGenerator
             }
         }
 
-        string target = SqlDialect.Q(table.Name);
+        string target = sql.Quote(table.Name);
         if (columns.Count == 0)
         {
             return SeedSql.Ok($"INSERT INTO {target} DEFAULT VALUES;");
         }
 
-        string columnList = string.Join(", ", columns.Select(SqlDialect.Q));
+        string columnList = string.Join(", ", columns.Select(sql.Quote));
         return sources.Count == 0
             ? SeedSql.Ok($"INSERT INTO {target} ({columnList}) VALUES ({string.Join(", ", values)});")
             : SeedSql.Ok(
-                $"INSERT INTO {target} ({columnList}) SELECT TOP (1) {string.Join(", ", values)} FROM {string.Join(" CROSS JOIN ", sources)};");
+                $"INSERT INTO {target} ({columnList}) {sql.SelectFirst(string.Join(", ", values), $"FROM {string.Join(" CROSS JOIN ", sources)}")};");
     }
 
     /// <summary>
-    /// Moves the table's identity counter up to <see cref="SqlLiterals.KeyOffset"/> (if it is lower), so seeded
+    /// Moves the table's identity counter up to <see cref="SqlDialect.KeyOffset"/> (if it is lower), so seeded
     /// rows get ids that HasData rows, existing or added by a later migration, do not use. Null without identity.
     /// </summary>
-    public static string? ReseedIdentity(TableMetadata table)
+    public string? ReseedIdentity(TableMetadata table)
     {
         if (table.Columns.FirstOrDefault(static c => c.IsIdentity) is not { } identity
-            || SqlLiterals.KeyOffset(identity.Type) is not long offset)
+            || sql.KeyOffset(identity.Type) is not long offset)
         {
             return null;
         }
 
-        return Reseed(table, offset);
+        return sql.ReseedIdentity(table.Name, identity, offset);
     }
 
     /// <summary>
     /// How to add a row to <paramref name="table"/> whose <paramref name="keyColumns"/> hold values no ordinary seed
-    /// row of any table holds (see <see cref="SqlLiterals.SeparateKeyValue"/>): values to copy a row with, and for an
+    /// row of any table holds (see <see cref="SqlDialect.SeparateKeyValue"/>): values to copy a row with, and for an
     /// identity column a reseed to run first. False when a column cannot get such a value.
     /// </summary>
-    public static bool TryGetSeparateKey(
+    public bool TryGetSeparateKey(
         TableMetadata table,
         IReadOnlyList<string> keyColumns,
         int ordinal,
@@ -127,11 +129,11 @@ internal static class SeedSqlGenerator
         {
             var column = table.FindColumn(name);
             bool inForeignKey = table.ForeignKeys.Any(f => f.Columns.Contains(name, StringComparer.OrdinalIgnoreCase));
-            if (column is { IsIdentity: true } && SqlLiterals.SeparateKeyOffset(column.Type) is long offset)
+            if (column is { IsIdentity: true } && sql.SeparateKeyOffset(column.Type) is long offset)
             {
-                reseed = Reseed(table, offset);
+                reseed = sql.ReseedIdentity(table.Name, column, offset);
             }
-            else if (column is { IsInsertable: true } && !inForeignKey && SqlLiterals.SeparateKeyValue(column.Type, ordinal) is { } value)
+            else if (column is { IsInsertable: true } && !inForeignKey && sql.SeparateKeyValue(column.Type, ordinal) is { } value)
             {
                 result.Add(new ColumnValue(column.Name, value, Unique: true));
             }
@@ -140,7 +142,7 @@ internal static class SeedSqlGenerator
                 failure = column switch
                 {
                     null => $"column '{name}' does not exist at N-1",
-                    { IsIdentity: false, IsInsertable: false } => $"column '{column.Name}' is filled by SQL Server",
+                    { IsIdentity: false, IsInsertable: false } => $"column '{column.Name}' is filled by the database",
                     _ when inForeignKey => $"column '{column.Name}' is a foreign key column",
                     _ => $"no such value can be generated for column '{column.Name}' of type {column.Type}"
                 };
@@ -151,20 +153,14 @@ internal static class SeedSqlGenerator
         return true;
     }
 
-    private static string Reseed(TableMetadata table, long offset)
-    {
-        string name = SqlLiterals.NString(SqlDialect.Q(table.Name));
-        return $"IF IDENT_CURRENT({name}) < {offset} DBCC CHECKIDENT ({name}, RESEED, {offset}) WITH NO_INFOMSGS;";
-    }
-
-    public static string UpdateOneRow(TableMetadata table, IReadOnlyList<ColumnValue> assignments)
-        => $"UPDATE TOP (1) {SqlDialect.Q(table.Name)} SET {string.Join(", ", assignments.Select(static a => $"{SqlDialect.Q(a.Column)} = {a.Value}"))}{WhereFound(assignments)};";
+    public string UpdateOneRow(TableMetadata table, IReadOnlyList<ColumnValue> assignments)
+        => sql.UpdateFirst(table.Name, string.Join(", ", assignments.Select(a => $"{sql.Quote(a.Column)} = {a.Value}")), WhereFound(assignments));
 
     /// <summary>
     /// Copies one existing row. <paramref name="keep"/> columns stay identical, <paramref name="overrides"/>
     /// are set, and each existing unique key gets a fresh value in one of its other columns.
     /// </summary>
-    public static SeedSql CopyRow(
+    public SeedSql CopyRow(
         TableMetadata table,
         IReadOnlyCollection<string> keep,
         IReadOnlyList<ColumnValue> overrides,
@@ -178,7 +174,7 @@ internal static class SeedSqlGenerator
     /// only change in a foreign key column takes keys of principal rows no row references yet; see
     /// <see cref="PrincipalsForCopies"/>.
     /// </summary>
-    public static SeedSql CopyRows(
+    public SeedSql CopyRows(
         TableMetadata table,
         IReadOnlyCollection<string> keep,
         IReadOnlyList<ColumnValue> overrides,
@@ -197,7 +193,7 @@ internal static class SeedSqlGenerator
             var values = new string[ordinals.Count];
             for (int i = 0; i < ordinals.Count; i++)
             {
-                string? value = fk is null ? SqlLiterals.KeyValue(candidate.Type, ordinals[i]) : UnreferencedKey(table, fk, skip: i);
+                string? value = fk is null ? sql.KeyValue(candidate.Type, ordinals[i]) : UnreferencedKey(table, fk, skip: i);
                 if (value is null)
                 {
                     return SeedSql.Fail($"no value can be generated for column '{candidate.Name}' of type {candidate.Type}");
@@ -209,30 +205,33 @@ internal static class SeedSqlGenerator
             fresh[candidate.Name] = values;
         }
 
-        string target = SqlDialect.Q(table.Name);
+        string target = sql.Quote(table.Name);
         var insertable = table.Columns.Where(static c => c.IsInsertable).ToList();
         if (insertable.Count == 0)
         {
             return SeedSql.Ok(string.Join(" ", ordinals.Select(_ => $"INSERT INTO {target} DEFAULT VALUES;")));
         }
 
-        string columnList = string.Join(", ", insertable.Select(static c => SqlDialect.Q(c.Name)));
+        string columnList = string.Join(", ", insertable.Select(c => sql.Quote(c.Name)));
         if (ordinals.Count == 1)
         {
             var single = insertable.Select(c =>
-                overrideMap.GetValueOrDefault(c.Name) ?? fresh.GetValueOrDefault(c.Name)?[0] ?? SqlDialect.Q(c.Name));
-            return SeedSql.Ok($"INSERT INTO {target} ({columnList}) SELECT TOP (1) {string.Join(", ", single)} FROM {target}{WhereFound(overrides)};");
+                overrideMap.GetValueOrDefault(c.Name) ?? fresh.GetValueOrDefault(c.Name)?[0] ?? sql.Quote(c.Name));
+            return SeedSql.Ok($"INSERT INTO {target} ({columnList}) {sql.SelectFirst(string.Join(", ", single), $"FROM {target}{WhereFound(overrides)}")};");
         }
 
-        // One scan of one source row, multiplied by a row number [n].[k] that picks each copy's fresh values.
+        // One scan of one source row, multiplied by a row number n.k that picks each copy's fresh values.
+        string source = sql.Quote("s");
+        string copy = $"{sql.Quote("n")}.{sql.Quote("k")}";
         var multi = insertable.Select(c =>
             overrideMap.GetValueOrDefault(c.Name)
             ?? (fresh.TryGetValue(c.Name, out var perCopy)
-                ? $"CASE [n].[k] {string.Join(" ", perCopy.Select((v, i) => $"WHEN {i + 1} THEN {v}"))} END"
-                : $"[s].{SqlDialect.Q(c.Name)}"));
+                ? $"CASE {copy} {string.Join(" ", perCopy.Select((v, i) => $"WHEN {i + 1} THEN {v}"))} END"
+                : $"{source}.{sql.Quote(c.Name)}"));
         string rowNumbers = string.Join(", ", ordinals.Select((_, i) => $"({i + 1})"));
         return SeedSql.Ok(
-            $"INSERT INTO {target} ({columnList}) SELECT {string.Join(", ", multi)} FROM (SELECT TOP (1) * FROM {target}{WhereFound(overrides)}) AS [s] CROSS JOIN (VALUES {rowNumbers}) AS [n]([k]);");
+            $"INSERT INTO {target} ({columnList}) SELECT {string.Join(", ", multi)} FROM ({sql.SelectFirst("*", $"FROM {target}{WhereFound(overrides)}")}) "
+            + $"AS {source} CROSS JOIN (VALUES {rowNumbers}) AS {sql.Quote("n")}({sql.Quote("k")});");
     }
 
     /// <summary>
@@ -240,7 +239,7 @@ internal static class SeedSqlGenerator
     /// foreign key column, as in a join table whose key is its two foreign keys. Each copy needs a principal row that
     /// no row of <paramref name="table"/> references yet, so the caller adds that many first.
     /// </summary>
-    public static IReadOnlyList<TableName> PrincipalsForCopies(
+    public IReadOnlyList<TableName> PrincipalsForCopies(
         TableMetadata table,
         IReadOnlyCollection<string> keep,
         IReadOnlyList<ColumnValue> overrides)
@@ -286,7 +285,7 @@ internal static class SeedSqlGenerator
                 : free.Select(c => new FreshColumn(c, OnlyForeignKey(table, c))).FirstOrDefault(static f => f.ForeignKey is not null);
             if (fresh is null)
             {
-                failure = $"a copied row cannot get a new value for unique key '{key.Name}': its other columns are kept, filled by SQL Server, "
+                failure = $"a copied row cannot get a new value for unique key '{key.Name}': its other columns are kept, filled by the database, "
                     + "or in a foreign key over several columns or to its own table";
                 return false;
             }
@@ -308,11 +307,13 @@ internal static class SeedSqlGenerator
     /// The key of the principal row, in key order, that comes after <paramref name="skip"/> others no row of
     /// <paramref name="table"/> references through <paramref name="fk"/>.
     /// </summary>
-    private static string UnreferencedKey(TableMetadata table, ForeignKeyMetadata fk, int skip)
+    private string UnreferencedKey(TableMetadata table, ForeignKeyMetadata fk, int skip)
     {
-        string key = $"[p].{SqlDialect.Q(fk.PrincipalColumns[0])}";
-        return $"(SELECT {key} FROM {SqlDialect.Q(fk.PrincipalTable)} AS [p] WHERE NOT EXISTS (SELECT 1 FROM {SqlDialect.Q(table.Name)} AS [d] "
-            + $"WHERE [d].{SqlDialect.Q(fk.Columns[0])} = {key}) ORDER BY {key} OFFSET {skip} ROWS FETCH NEXT 1 ROWS ONLY)";
+        string p = sql.Quote("p");
+        string d = sql.Quote("d");
+        string key = $"{p}.{sql.Quote(fk.PrincipalColumns[0])}";
+        return $"(SELECT {key} FROM {sql.Quote(fk.PrincipalTable)} AS {p} WHERE NOT EXISTS (SELECT 1 FROM {sql.Quote(table.Name)} AS {d} "
+            + $"WHERE {d}.{sql.Quote(fk.Columns[0])} = {key}) ORDER BY {key} OFFSET {skip} ROWS FETCH NEXT 1 ROWS ONLY)";
     }
 
     /// <summary>" WHERE ... IS NOT NULL" over the lookups among <paramref name="values"/>; empty without any.</summary>
@@ -326,7 +327,7 @@ internal static class SeedSqlGenerator
     /// Non-NULL values for the columns a filtered unique index requires to be non-NULL: a principal row's key
     /// for foreign key columns, otherwise an ordinary value.
     /// </summary>
-    public static bool TryGetFilterValues(
+    public bool TryGetFilterValues(
         MigrationScenario scenario,
         TableMetadata table,
         out IReadOnlyList<ColumnValue> values,
@@ -345,8 +346,8 @@ internal static class SeedSqlGenerator
 
             var fk = table.ForeignKeys.FirstOrDefault(f => f.Columns.Contains(column.Name, StringComparer.OrdinalIgnoreCase));
             string? value = fk is null
-                ? SqlLiterals.KeyValue(column.Type, ordinal: 1)
-                : $"(SELECT TOP (1) {SqlDialect.Q(fk.PrincipalColumns[IndexOf(fk.Columns, column.Name)])} FROM {SqlDialect.Q(fk.PrincipalTable)})";
+                ? sql.KeyValue(column.Type, ordinal: 1)
+                : $"({sql.SelectFirst(sql.Quote(fk.PrincipalColumns[IndexOf(fk.Columns, column.Name)]), $"FROM {sql.Quote(fk.PrincipalTable)}")})";
             if (value is null)
             {
                 failure = $"no value can be generated for column '{column.Name}' of type {column.Type}";
@@ -380,7 +381,7 @@ internal static class SeedSqlGenerator
     /// only needs rows to exist (NOT NULL column without default, or a column the migration adds itself) or is
     /// planted by copying a row (duplicates).
     /// </summary>
-    public static bool TryGetBadValues(
+    public bool TryGetBadValues(
         MigrationScenario scenario,
         TableMetadata table,
         out IReadOnlyList<ColumnValue> values,
@@ -423,7 +424,7 @@ internal static class SeedSqlGenerator
                     return false;
                 }
 
-                if (SqlLiterals.LongValue(sized.Type, length) is not { } longValue)
+                if (sql.LongValue(sized.Type, length) is not { } longValue)
                 {
                     failure = $"column '{sized.Name}' ({sized.Type}) is not a string or binary column at N-1";
                     return false;
@@ -468,7 +469,7 @@ internal static class SeedSqlGenerator
                         return false;
                     }
 
-                    if (SqlLiterals.OrphanValue(column.Type) is not { } value)
+                    if (sql.OrphanValue(column.Type) is not { } value)
                     {
                         failure = $"no orphan value can be generated for column '{name}' of type {column.Type}";
                         return false;
@@ -500,7 +501,7 @@ internal static class SeedSqlGenerator
     /// lookups. Keys seeded in different tables often match, so the caller first adds a principal row with a separate
     /// key (see <see cref="TryGetSeparateKey"/>).
     /// </summary>
-    private static bool TryGetKeyOutsidePrincipal(
+    private bool TryGetKeyOutsidePrincipal(
         MigrationScenario scenario,
         TableMetadata table,
         ForeignKeyMetadata existing,
@@ -516,14 +517,16 @@ internal static class SeedSqlGenerator
         }
 
         var oldKey = existing.PrincipalColumnsFor(scenario.Columns)!;
-        string match = string.Join(" AND ", newKey.Select((k, i) => $"[n].{SqlDialect.Q(k)} = [p].{SqlDialect.Q(oldKey[i])}"));
-        string rows = $"FROM {SqlDialect.Q(existing.PrincipalTable)} AS [p] "
-            + $"WHERE NOT EXISTS (SELECT 1 FROM {SqlDialect.Q(scenario.PrincipalSchema, newPrincipal)} AS [n] WHERE {match}) "
-            + $"ORDER BY {string.Join(", ", oldKey.Select(static k => $"[p].{SqlDialect.Q(k)}"))}";
+        string p = sql.Quote("p");
+        string n = sql.Quote("n");
+        string match = string.Join(" AND ", newKey.Select((k, i) => $"{n}.{sql.Quote(k)} = {p}.{sql.Quote(oldKey[i])}"));
+        string rows = $"FROM {sql.Quote(existing.PrincipalTable)} AS {p} "
+            + $"WHERE NOT EXISTS (SELECT 1 FROM {sql.Quote(scenario.PrincipalSchema, newPrincipal)} AS {n} WHERE {match}) "
+            + $"ORDER BY {string.Join(", ", oldKey.Select(k => $"{p}.{sql.Quote(k)}"))}";
         values =
         [
             .. scenario.Columns.Select((c, i) => new ColumnValue(
-                table.FindColumn(c)?.Name ?? c, $"(SELECT TOP (1) [p].{SqlDialect.Q(oldKey[i])} {rows})", Lookup: true))
+                table.FindColumn(c)?.Name ?? c, $"({sql.SelectFirst($"{p}.{sql.Quote(oldKey[i])}", rows)})", Lookup: true))
         ];
         failure = null;
         return true;

@@ -36,11 +36,23 @@ jobs:
           --health-timeout 5s
           --health-retries 12
           --health-start-period 20s
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: MigrationTester_Ci1
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
 
     env:
       # Throwaway CI container. The database names only name the throwaway test databases.
       MIGRATION_TESTER_SQL_TEST: Server=localhost,1433;Database=MigrationTester_Test;User Id=sa;Password=MigrationTester_Ci1;TrustServerCertificate=True;MultipleActiveResultSets=True
       MIGRATION_TESTER_SCENARIO_TEST: Server=localhost,1433;Database=MigrationTesterExamples_Test;User Id=sa;Password=MigrationTester_Ci1;TrustServerCertificate=True;MultipleActiveResultSets=True
+      MIGRATION_TESTER_PG_TEST: Host=localhost;Port=5432;Database=MigrationTester_Test;Username=postgres;Password=MigrationTester_Ci1
 
     steps:
       - uses: actions/checkout@v7

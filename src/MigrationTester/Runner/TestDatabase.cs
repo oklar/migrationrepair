@@ -1,5 +1,6 @@
-using Microsoft.Data.SqlClient;
+using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
+using MigrationTester.Providers;
 
 namespace MigrationTester.Runner;
 
@@ -9,15 +10,16 @@ namespace MigrationTester.Runner;
 /// </summary>
 internal sealed class TestDatabase
 {
-    private const int MaxBaseNameLength = 100;
-
     private readonly string _connectionString;
 
-    private TestDatabase(string name, string connectionString)
+    private TestDatabase(DatabaseProvider provider, string name, string connectionString)
     {
+        Provider = provider;
         Name = name;
         _connectionString = connectionString;
     }
+
+    public DatabaseProvider Provider { get; }
 
     public string Name { get; }
 
@@ -27,22 +29,22 @@ internal sealed class TestDatabase
     /// </summary>
     public string? CleanAt { get; set; }
 
-    public static TestDatabase For(DbContext context, string? databaseName)
+    public static TestDatabase For(DbContext context, DatabaseProvider provider, string? databaseName)
     {
         string connectionString = context.Database.GetConnectionString()
             ?? throw new InvalidOperationException(
-                "The context has no connection string. Configure it with UseSqlServer(connectionString) so MigrationTester can point it at a test database.");
+                $"The context has no connection string. Configure it with {provider.ConfigureMethod}(connectionString) so MigrationTester can point it at a test database.");
 
-        var builder = new SqlConnectionStringBuilder(connectionString);
-        if (!string.IsNullOrEmpty(builder.AttachDBFilename))
-        {
-            throw new NotSupportedException(
-                "Connection strings with AttachDbFilename are not supported; use a server connection string (LocalDB works with Server=(localdb)\\MSSQLLocalDB).");
-        }
+        // The ADO.NET provider's own builder, which knows its keywords and their synonyms.
+        var builder = DbProviderFactories.GetFactory(context.Database.GetDbConnection())?.CreateConnectionStringBuilder()
+            ?? new DbConnectionStringBuilder();
+        builder.ConnectionString = connectionString;
+        provider.EnsureCanRepoint(builder);
 
-        string name = databaseName ?? ThrowawayName(builder.InitialCatalog);
-        builder.InitialCatalog = name;
-        return new TestDatabase(name, builder.ConnectionString);
+        string? configured = builder.TryGetValue(provider.DatabaseKeyword, out object? value) ? value as string : null;
+        string name = databaseName ?? ThrowawayName(configured, provider.MaxBaseNameLength);
+        builder[provider.DatabaseKeyword] = name;
+        return new TestDatabase(provider, name, builder.ConnectionString);
     }
 
     /// <summary>A context from <paramref name="createContext"/>, pointed at this database.</summary>
@@ -68,12 +70,12 @@ internal sealed class TestDatabase
         }
     }
 
-    private static string ThrowawayName(string? configured)
+    private static string ThrowawayName(string? configured, int maxBaseNameLength)
     {
         string baseName = string.IsNullOrWhiteSpace(configured) ? "MigrationTester" : configured;
-        if (baseName.Length > MaxBaseNameLength)
+        if (baseName.Length > maxBaseNameLength)
         {
-            baseName = baseName[..MaxBaseNameLength];
+            baseName = baseName[..maxBaseNameLength];
         }
 
         return $"{baseName}_mt_{Guid.NewGuid().ToString("N")[..8]}";

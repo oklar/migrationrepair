@@ -178,7 +178,7 @@ public sealed class ScenarioPlannerTests
     [InlineData("LEN([Code]) = 3", "arbitrary CHECK SQL is not supported")]
     [InlineData("[Start] < [End]", "arbitrary CHECK SQL is not supported")]
     [InlineData("[Missing] > 0", "Column 'Missing' does not exist at N-1")]
-    [InlineData("[Total] > 0", "Column 'Total' is filled by SQL Server")]
+    [InlineData("[Total] > 0", "Column 'Total' is filled by the database")]
     [InlineData("[Small] >= 0", "No tinyint value that breaks '[Small] >= 0' could be generated")]
     [InlineData("[Start] > '2020-01-01'", "No datetime2(7) value")]
     public void Plan_check_constraint_without_a_known_breaking_value_is_not_seeded(string sql, string reason)
@@ -1220,7 +1220,7 @@ public sealed class ScenarioPlannerTests
 
         var s = Assert.Single(scenarios);
         Assert.Equal(ScenarioStatus.NotSeeded, s.Status);
-        Assert.Contains("filled by SQL Server", s.Reason);
+        Assert.Contains("filled by the database", s.Reason);
     }
 
     private static TableMetadata OrdersWithCustomerForeignKey() => new()

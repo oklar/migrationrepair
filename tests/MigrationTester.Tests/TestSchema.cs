@@ -1,3 +1,4 @@
+using MigrationTester.Providers.SqlServer;
 using MigrationTester.Schema;
 
 namespace MigrationTester.Tests;
@@ -5,7 +6,7 @@ namespace MigrationTester.Tests;
 /// <summary>Builds N-1 schema models for planner and seeder unit tests (default schema <c>dbo</c>).</summary>
 internal static class TestSchema
 {
-    public static RelationalSchemaModel Of(params TableMetadata[] tables) => new() { DefaultSchema = "dbo", Tables = tables };
+    public static RelationalSchemaModel Of(params TableMetadata[] tables) => new() { Dialect = SqlServerDialect.Instance, DefaultSchema = "dbo", Tables = tables };
 
     /// <summary>Tables that exist at N-1, without column details.</summary>
     public static RelationalSchemaModel WithTables(params string[] names) => Of([.. names.Select(n => Table(n))]);
@@ -23,7 +24,7 @@ internal static class TestSchema
         new()
         {
             Name = name,
-            Type = SqlType.Parse(type) ?? throw new ArgumentException($"Unparseable type '{type}'.", nameof(type)),
+            Type = SqlServerDialect.Instance.ParseType(type) ?? throw new ArgumentException($"Unparseable type '{type}'.", nameof(type)),
             IsNullable = nullable,
             IsIdentity = identity,
             IsComputed = computed,

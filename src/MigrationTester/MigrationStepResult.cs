@@ -1,3 +1,4 @@
+using MigrationTester.Providers;
 using MigrationTester.Runner;
 
 namespace MigrationTester;
@@ -27,7 +28,7 @@ public sealed class MigrationStepResult
 
     /// <summary>
     /// Planted scenarios the failure matches: those whose <c>ALTER COLUMN</c> changed a value
-    /// (<see cref="ScenarioKind.ColumnTypeConversionLossy"/>), and those SQL Server's error numbers and the names in its
+    /// (<see cref="ScenarioKind.ColumnTypeConversionLossy"/>), and those the database's error codes and the names in its
     /// messages point to. Empty when the step passed or when the error matches none of them.
     /// </summary>
     public IReadOnlyList<MigrationScenario> FailingScenarios { get; internal init; } = [];
@@ -51,6 +52,9 @@ public sealed class MigrationStepResult
 
     /// <summary>What went wrong before the migration ran, for <see cref="MigrationStepOutcome.Error"/>.</summary>
     internal string? ErrorStage { get; init; }
+
+    /// <summary>The database the step ran in, which reads <see cref="Exception"/>.</summary>
+    internal DatabaseProvider? Provider { get; init; }
 
     /// <summary>
     /// True when the migration passed and, with <see cref="MigrationTestOptions.RequireAllScenariosSeeded"/>,

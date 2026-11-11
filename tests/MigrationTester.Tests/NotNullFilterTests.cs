@@ -13,6 +13,9 @@ public sealed class NotNullFilterTests
     [InlineData("([A] IS NOT NULL) AND ([B] IS NOT NULL)", "A,B")]
     [InlineData("Email is not null", "Email")]
     [InlineData("[Odd]]Name] IS NOT NULL", "Odd]Name")]
+    // As PostgreSQL stores and EF writes it.
+    [InlineData("(\"Email\" IS NOT NULL)", "Email")]
+    [InlineData("\"A\" IS NOT NULL AND \"Odd\"\"Name\" IS NOT NULL", "A,Odd\"Name")]
     public void TryParse_accepts_is_not_null_terms(string filter, string expected)
     {
         Assert.True(NotNullFilter.TryParse(filter, out var columns));

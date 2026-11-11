@@ -1,10 +1,11 @@
 using Microsoft.EntityFrameworkCore;
+using MigrationTester.Providers;
 using MigrationTester.Runner;
 
 namespace MigrationTester;
 
 /// <summary>
-/// Tests EF Core migrations against SQL Server with data that is valid before each migration but that the
+/// Tests EF Core migrations against SQL Server or PostgreSQL with data that is valid before each migration but that the
 /// migration's <c>Up()</c> may not handle. For each migration N it migrates a fresh test database to N-1,
 /// plants that data, then migrates to N and reports whether, and on what, the migration failed.
 /// </summary>
@@ -100,9 +101,9 @@ public static class MigrationTestRunner
         TestDatabase database;
         await using (var context = options.CreateContext())
         {
-            MigrationReader.EnsureSqlServer(context);
+            var provider = DatabaseProvider.For(context);
             migrationIds = selectMigrations(context);
-            database = TestDatabase.For(context, options.DatabaseName);
+            database = TestDatabase.For(context, provider, options.DatabaseName);
         }
 
         if (migrationIds.Count == 0)

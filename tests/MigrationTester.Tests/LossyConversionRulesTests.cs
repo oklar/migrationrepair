@@ -2,11 +2,12 @@ using System.Numerics;
 using MigrationTester.Planning;
 using MigrationTester.Schema;
 using Xunit;
+using MigrationTester.Providers.SqlServer;
 
 namespace MigrationTester.Tests;
 
 /// <summary>
-/// <see cref="LossyConversionRules.LossyValue"/>: a value for each type change SQL Server converts without an error
+/// <see cref="SqlServerLossyConversions.LossyValue"/>: a value for each type change SQL Server converts without an error
 /// but changing it, and none for changes that keep every value or only reformat it.
 /// </summary>
 public sealed class LossyConversionRulesTests
@@ -53,7 +54,7 @@ public sealed class LossyConversionRulesTests
     [InlineData("money", "nvarchar(30)", null, null, "1.2345")]
     [InlineData("datetime", "nvarchar(30)", null, null, "'2020-01-01T12:34:56.123'")]
     public void A_change_that_alters_values_gets_a_value_it_alters(string from, string to, int? fromCodePage, int? toCodePage, string expected)
-        => Assert.Equal(expected, LossyConversionRules.LossyValue(Type(from), Type(to), fromCodePage, toCodePage));
+        => Assert.Equal(expected, SqlServerLossyConversions.LossyValue(Type(from), Type(to), fromCodePage, toCodePage));
 
     [Theory]
     // Every value kept.
@@ -97,7 +98,7 @@ public sealed class LossyConversionRulesTests
     [InlineData("nvarchar(20)", "varchar(20)", null, null)]
     [InlineData("varchar(20)", "varchar(20)", null, 1251)]
     public void A_change_that_keeps_every_value_gets_none(string from, string to, int? fromCodePage, int? toCodePage)
-        => Assert.Null(LossyConversionRules.LossyValue(Type(from), Type(to), fromCodePage, toCodePage));
+        => Assert.Null(SqlServerLossyConversions.LossyValue(Type(from), Type(to), fromCodePage, toCodePage));
 
     [Theory]
     [InlineData("1234567", 0, 24, true)]
@@ -107,7 +108,7 @@ public sealed class LossyConversionRulesTests
     [InlineData("1234567890123456", 0, 53, true)]
     [InlineData("123456789012345678", 2, 53, false)]
     public void RoundTrips_says_whether_the_nearest_binary_number_gives_the_value_back(string unscaled, int scale, int bits, bool expected)
-        => Assert.Equal(expected, LossyConversionRules.RoundTrips(BigInteger.Parse(unscaled), scale, bits));
+        => Assert.Equal(expected, LossyValues.RoundTrips(BigInteger.Parse(unscaled), scale, bits));
 
-    private static SqlType Type(string text) => SqlType.Parse(text) ?? throw new ArgumentException(text);
+    private static SqlType Type(string text) => SqlServerDialect.Instance.ParseType(text) ?? throw new ArgumentException(text);
 }

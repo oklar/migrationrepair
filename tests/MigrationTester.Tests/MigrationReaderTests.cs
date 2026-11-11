@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
+using MigrationTester.Providers.SqlServer;
 using MigrationTester.Runner;
 using Xunit;
 
@@ -44,7 +45,7 @@ public sealed class MigrationReaderTests
             "20260319180738_AddUniqueCode",
             MigrationsSqlGenerationOptions.NoTransactions);
 
-        var batches = StepRunner.ScriptBatches(script);
+        var batches = SqlServerProvider.Instance.ScriptBatches(script);
 
         Assert.Contains(batches, b => b.Contains("CREATE UNIQUE INDEX [IX_Items_Code]", StringComparison.Ordinal));
         Assert.Contains(batches, b => b.Contains("[__EFMigrationsHistory]", StringComparison.Ordinal));
@@ -55,7 +56,7 @@ public sealed class MigrationReaderTests
     [Fact]
     public void ScriptBatches_splits_on_GO_lines_only()
     {
-        var batches = StepRunner.ScriptBatches("SELECT 1;\r\nGO\r\n\r\nSELECT N'GO';\nGOTO_X:\ngo\n");
+        var batches = SqlServerProvider.Instance.ScriptBatches("SELECT 1;\r\nGO\r\n\r\nSELECT N'GO';\nGOTO_X:\ngo\n");
 
         Assert.Equal(["SELECT 1;", $"SELECT N'GO';{Environment.NewLine}GOTO_X:"], batches);
     }

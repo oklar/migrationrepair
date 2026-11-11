@@ -1,5 +1,4 @@
-using MigrationTester.Planning;
-using MigrationTester.Schema;
+using MigrationTester.Providers.SqlServer;
 using Xunit;
 
 namespace MigrationTester.Tests;
@@ -28,7 +27,7 @@ public sealed class TypeConversionRulesTests
     [InlineData("datetime", "smalldatetime", "'18000101'")]
     public void FailingValue_fits_old_type_and_breaks_new_type(string from, string to, string expected)
     {
-        Assert.Equal(expected, TypeConversionRules.FailingValue(SqlType.Parse(from)!.Value, SqlType.Parse(to)!.Value));
+        Assert.Equal(expected, SqlServerDialect.Instance.FailingConversionValue(SqlServerDialect.Instance.ParseType(from)!.Value, SqlServerDialect.Instance.ParseType(to)!.Value));
     }
 
     [Theory]
@@ -44,6 +43,6 @@ public sealed class TypeConversionRulesTests
     [InlineData("uniqueidentifier", "nvarchar(36)")]
     public void FailingValue_is_null_when_every_value_converts(string from, string to)
     {
-        Assert.Null(TypeConversionRules.FailingValue(SqlType.Parse(from)!.Value, SqlType.Parse(to)!.Value));
+        Assert.Null(SqlServerDialect.Instance.FailingConversionValue(SqlServerDialect.Instance.ParseType(from)!.Value, SqlServerDialect.Instance.ParseType(to)!.Value));
     }
 }

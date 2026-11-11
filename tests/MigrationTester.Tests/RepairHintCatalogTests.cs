@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
 using MigrationTester.Planning;
+using MigrationTester.Providers.SqlServer;
 using Xunit;
 
 namespace MigrationTester.Tests;
@@ -9,7 +10,7 @@ public sealed class RepairHintCatalogTests
     [Fact]
     public void ForScenario_duplicate_unique_includes_deduplicate_keyword()
     {
-        var scenario = new MigrationScenario
+        var scenario = new MigrationScenario(SqlServerDialect.Instance)
         {
             Kind = ScenarioKind.DuplicateUniqueIndexOrConstraint,
             Name = "test",
@@ -27,7 +28,7 @@ public sealed class RepairHintCatalogTests
     [Fact]
     public void ForScenario_foreign_key_orphan_includes_delete_pattern()
     {
-        var scenario = new MigrationScenario
+        var scenario = new MigrationScenario(SqlServerDialect.Instance)
         {
             Kind = ScenarioKind.ForeignKeyOrphan,
             Name = "test",
@@ -47,7 +48,7 @@ public sealed class RepairHintCatalogTests
     [Fact]
     public void ForScenario_non_nullable_includes_update_where_null()
     {
-        var scenario = new MigrationScenario
+        var scenario = new MigrationScenario(SqlServerDialect.Instance)
         {
             Kind = ScenarioKind.NonNullableColumnWithNull,
             Name = "test",
@@ -65,7 +66,7 @@ public sealed class RepairHintCatalogTests
     [Fact]
     public void ForScenario_max_length_includes_truncation_update()
     {
-        var scenario = new MigrationScenario
+        var scenario = new MigrationScenario(SqlServerDialect.Instance)
         {
             Kind = ScenarioKind.MaxLengthExceededAfterShrink,
             Name = "test",
@@ -83,7 +84,7 @@ public sealed class RepairHintCatalogTests
     [Fact]
     public void ForScenario_check_constraint_includes_predicate_guidance()
     {
-        var scenario = new MigrationScenario
+        var scenario = new MigrationScenario(SqlServerDialect.Instance)
         {
             Kind = ScenarioKind.CheckConstraintViolation,
             Name = "test",
@@ -98,7 +99,7 @@ public sealed class RepairHintCatalogTests
     [Fact]
     public void ForScenario_check_constraint_finds_the_rows_that_fail_its_predicate()
     {
-        var scenario = new MigrationScenario
+        var scenario = new MigrationScenario(SqlServerDialect.Instance)
         {
             Kind = ScenarioKind.CheckConstraintViolation,
             Name = "test",
@@ -117,7 +118,7 @@ public sealed class RepairHintCatalogTests
     [Fact]
     public void ForScenario_not_null_add_column_includes_default_guidance()
     {
-        var scenario = new MigrationScenario
+        var scenario = new MigrationScenario(SqlServerDialect.Instance)
         {
             Kind = ScenarioKind.NotNullColumnAddedWithoutDefault,
             Name = "test",
@@ -135,7 +136,7 @@ public sealed class RepairHintCatalogTests
     [Fact]
     public void ForScenario_type_conversion_includes_try_cast()
     {
-        var scenario = new MigrationScenario
+        var scenario = new MigrationScenario(SqlServerDialect.Instance)
         {
             Kind = ScenarioKind.ColumnTypeConversionIncompatible,
             Name = "test",
@@ -156,7 +157,7 @@ public sealed class RepairHintCatalogTests
     [Fact]
     public void ForScenario_precision_overflow_includes_power_and_round()
     {
-        var scenario = new MigrationScenario
+        var scenario = new MigrationScenario(SqlServerDialect.Instance)
         {
             Kind = ScenarioKind.DecimalPrecisionOverflow,
             Name = "test",
@@ -183,7 +184,7 @@ public sealed class RepairHintCatalogTests
     public void ForScenario_lossy_conversion_gives_the_update_that_makes_the_loss_explicit(string oldType, string newType, string alternative)
     {
         // The names at the AlterColumn (after a rename earlier in Up()), not the N-1 names the scenario holds.
-        var scenario = new MigrationScenario
+        var scenario = new MigrationScenario(SqlServerDialect.Instance)
         {
             Kind = ScenarioKind.ColumnTypeConversionLossy,
             Name = "test",

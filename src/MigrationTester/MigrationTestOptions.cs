@@ -6,7 +6,8 @@ namespace MigrationTester;
 public sealed class MigrationTestOptions
 {
     /// <summary>
-    /// Creates a new context configured with <c>UseSqlServer(connectionString)</c> and the migrations to test.
+    /// Creates a new context configured with <c>UseSqlServer(connectionString)</c> or <c>UseNpgsql(connectionString)</c> and
+    /// the migrations to test.
     /// Called once per migration; the runner points each context at the test database (see <see cref="DatabaseName"/>),
     /// so the connection string only needs the server and credentials.
     /// </summary>

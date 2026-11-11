@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
 using MigrationTester.Planning;
+using MigrationTester.Providers;
 using MigrationTester.Runner;
 
 namespace MigrationTester;
@@ -11,8 +12,9 @@ namespace MigrationTester;
 public sealed record MigrationScenario
 {
     /// <summary>Created by the planner; callers only read scenarios.</summary>
-    internal MigrationScenario()
+    internal MigrationScenario(SqlDialect dialect)
     {
+        Dialect = dialect;
     }
 
     /// <summary>What kind of data the migration may fail on.</summary>
@@ -72,8 +74,14 @@ public sealed record MigrationScenario
     /// <summary>Why the data was not planted; null when <see cref="Status"/> is <see cref="ScenarioStatus.Planted"/>.</summary>
     public string? Reason { get; internal init; }
 
-    /// <summary>T-SQL showing how a migration can fix data like this before the statement that fails on it.</summary>
+    /// <summary>
+    /// SQL in the database's dialect (T-SQL for SQL Server) showing how a migration can fix data like this before
+    /// the statement that fails on it.
+    /// </summary>
     public string RepairHint => RepairHintCatalog.ForScenario(this);
+
+    /// <summary>The SQL of the database the scenario is planned for.</summary>
+    internal SqlDialect Dialect { get; }
 
     /// <summary>SQL literal valid for the column at N-1 that the migration's conversion or new CHECK constraint rejects.</summary>
     internal string? SeedValue { get; init; }

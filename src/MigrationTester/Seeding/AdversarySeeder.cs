@@ -24,6 +24,8 @@ internal static class AdversarySeeder
     // A row copy may need new rows in a principal table, whose copies may need new rows in its principal, and so on.
     private const int MaxPrincipalDepth = 3;
 
+    private const string Savepoint = "migration_tester_seed";
+
     public static async Task<SeedResult> SeedAsync(
         DbConnection connection,
         RelationalSchemaModel schema,
@@ -33,20 +35,20 @@ internal static class AdversarySeeder
     {
         var sqlLog = new List<string>();
         var warnings = new List<string>();
+        var generator = new SeedSqlGenerator(schema.Dialect);
+        bool savepoints = transaction is not null && schema.Dialect.StatementErrorsAbortTransaction;
 
         var noBaselineRow = new Dictionary<TableName, string>();
         foreach (var table in TableInsertOrder.Topological(schema.Tables))
         {
-            if (SeedSqlGenerator.ReseedIdentity(table) is { } reseed)
+            if (generator.ReseedIdentity(table) is { } reseed)
             {
                 // Best effort: without it the seeded ids are merely more likely to meet HasData ids.
-                await TryExecuteAsync(connection, transaction, reseed, sqlLog, cancellationToken, expectRows: false).ConfigureAwait(false);
+                await ExecuteAsync(reseed, expectRows: false).ConfigureAwait(false);
             }
 
-            var insert = SeedSqlGenerator.BaselineInsert(table);
-            string? failure = insert.Succeeded
-                ? await TryExecuteAsync(connection, transaction, insert.Sql, sqlLog, cancellationToken).ConfigureAwait(false)
-                : insert.Failure;
+            var insert = generator.BaselineInsert(table);
+            string? failure = insert.Succeeded ? await ExecuteAsync(insert.Sql).ConfigureAwait(false) : insert.Failure;
             if (failure is not null)
             {
                 noBaselineRow[table.Name] = failure;
@@ -98,12 +100,12 @@ internal static class AdversarySeeder
                 }
 
                 // Two new rows, both inside the filter; existing rows may hold NULLs other scenarios planted.
-                return SeedSqlGenerator.TryGetFilterValues(scenario, table, out var filterValues, out string? filterFailure)
+                return generator.TryGetFilterValues(scenario, table, out var filterValues, out string? filterFailure)
                     ? await CopyAsync(table, scenario.Columns, filterValues, copies: 2).ConfigureAwait(false)
                     : filterFailure;
             }
 
-            if (!SeedSqlGenerator.TryGetBadValues(scenario, table, out var planted, out string? failure))
+            if (!generator.TryGetBadValues(scenario, table, out var planted, out string? failure))
             {
                 return failure;
             }
@@ -133,7 +135,7 @@ internal static class AdversarySeeder
             bool columnTaken = planted.Any(v => mutatedColumns.Contains(Key(table.Name, v.Column)));
             string? plantFailure = columnTaken
                 ? await CopyAsync(table, [], planted, copies: 1).ConfigureAwait(false)
-                : await ExecuteAsync(SeedSqlGenerator.UpdateOneRow(table, planted)).ConfigureAwait(false);
+                : await ExecuteAsync(generator.UpdateOneRow(table, planted)).ConfigureAwait(false);
             if (plantFailure is null)
             {
                 foreach (var v in planted)
@@ -153,7 +155,7 @@ internal static class AdversarySeeder
             int copies,
             int depth = 0)
         {
-            foreach (var principalName in SeedSqlGenerator.PrincipalsForCopies(table, keep, overrides))
+            foreach (var principalName in generator.PrincipalsForCopies(table, keep, overrides))
             {
                 string? failure = depth >= MaxPrincipalDepth ? $"principal rows are needed more than {MaxPrincipalDepth} tables away"
                     : schema.FindTable(principalName) is { } principal ? await CopyAsync(principal, [], [], copies, depth + 1).ConfigureAwait(false)
@@ -164,20 +166,19 @@ internal static class AdversarySeeder
                 }
             }
 
-            var statement = SeedSqlGenerator.CopyRows(
+            var statement = generator.CopyRows(
                 table, keep, overrides, [.. Enumerable.Range(0, copies).Select(_ => NextOrdinal(table.Name))]);
             return statement.Succeeded ? await ExecuteAsync(statement.Sql).ConfigureAwait(false) : statement.Failure;
         }
 
         async Task<string?> AddRowWithSeparateKeyAsync(TableMetadata table, IReadOnlyList<string> keyColumns)
         {
-            if (!SeedSqlGenerator.TryGetSeparateKey(table, keyColumns, NextOrdinal(table.Name), out var key, out string? reseed, out string? failure))
+            if (!generator.TryGetSeparateKey(table, keyColumns, NextOrdinal(table.Name), out var key, out string? reseed, out string? failure))
             {
                 return failure;
             }
 
-            if (reseed is not null
-                && await TryExecuteAsync(connection, transaction, reseed, sqlLog, cancellationToken, expectRows: false).ConfigureAwait(false) is { } reseedFailure)
+            if (reseed is not null && await ExecuteAsync(reseed, expectRows: false).ConfigureAwait(false) is { } reseedFailure)
             {
                 return reseedFailure;
             }
@@ -185,7 +186,8 @@ internal static class AdversarySeeder
             return await CopyAsync(table, [], key, copies: 1).ConfigureAwait(false);
         }
 
-        Task<string?> ExecuteAsync(string sql) => TryExecuteAsync(connection, transaction, sql, sqlLog, cancellationToken);
+        Task<string?> ExecuteAsync(string sql, bool expectRows = true)
+            => TryExecuteAsync(connection, transaction, savepoints, sql, sqlLog, expectRows, cancellationToken);
 
         int NextOrdinal(TableName table)
         {
@@ -197,21 +199,45 @@ internal static class AdversarySeeder
 
     private static string Key(TableName table, string column) => $"{table}|{column}";
 
-    /// <summary>Runs one statement; returns null on success, otherwise why it did not plant a row.</summary>
+    /// <summary>
+    /// Runs one statement; returns null on success, otherwise why it did not plant a row. With
+    /// <paramref name="savepoint"/>, a failed statement is rolled back to a savepoint, so the transaction goes on.
+    /// </summary>
     private static async Task<string?> TryExecuteAsync(
         DbConnection connection,
         DbTransaction? transaction,
+        bool savepoint,
         string sql,
         List<string> sqlLog,
-        CancellationToken cancellationToken,
-        bool expectRows = true)
+        bool expectRows,
+        CancellationToken cancellationToken)
     {
         await using var cmd = connection.CreateCommand();
         cmd.CommandText = sql;
         cmd.Transaction = transaction;
         try
         {
-            int affected = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            if (savepoint)
+            {
+                await transaction!.SaveAsync(Savepoint, cancellationToken).ConfigureAwait(false);
+            }
+
+            int affected;
+            try
+            {
+                affected = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (DbException) when (savepoint)
+            {
+                await transaction!.RollbackAsync(Savepoint, cancellationToken).ConfigureAwait(false);
+                throw;
+            }
+
+            if (savepoint)
+            {
+                await transaction!.ReleaseAsync(Savepoint, cancellationToken).ConfigureAwait(false);
+            }
+
             sqlLog.Add(sql);
 
             // -1 means row counts are off (SET NOCOUNT ON); only a reported 0 is a failure.

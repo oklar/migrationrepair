@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
 using MigrationTester.Runner;
 using Xunit;
+using MigrationTester.Providers.SqlServer;
 
 namespace MigrationTester.Tests;
 
@@ -9,7 +10,7 @@ public sealed class ReportFormatterTests
     [Fact]
     public void A_step_that_changed_a_value_says_what_it_became_and_how_to_make_it_explicit()
     {
-        var lossy = new MigrationScenario
+        var lossy = new MigrationScenario(SqlServerDialect.Instance)
         {
             Kind = ScenarioKind.ColumnTypeConversionLossy,
             Name = "Value in 'Price' that converting from decimal(18,4) to decimal(18,2) changes",
@@ -43,7 +44,7 @@ public sealed class ReportFormatterTests
     [Fact]
     public void ThrowIfFailed_throws_for_a_step_that_only_changed_values()
     {
-        var lossy = new MigrationScenario
+        var lossy = new MigrationScenario(SqlServerDialect.Instance)
         {
             Kind = ScenarioKind.ColumnTypeConversionLossy,
             Name = "test",

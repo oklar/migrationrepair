@@ -5,7 +5,7 @@
 | Path | Contents |
 |------|----------|
 | `src/MigrationTester/` | The library (the only packable project) |
-| `tests/MigrationTester.Tests/` | Unit and SQL Server integration tests (xUnit.net v3) |
+| `tests/MigrationTester.Tests/` | Unit, SQL Server and PostgreSQL integration tests (xUnit.net v3) |
 | `examples/MigrationTester.Examples/` | Consumer sample; see its [README](examples/MigrationTester.Examples/README.md) |
 
 Shared build settings live in `Directory.Build.props`, package versions in `Directory.Packages.props`. Warnings fail the build, including NuGet vulnerability warnings and missing XML docs on public members.
@@ -24,6 +24,16 @@ export MIGRATION_TESTER_SQL_TEST='Server=localhost\SQLEXPRESS;Database=Migration
 ```
 
 The examples use `MIGRATION_TESTER_SCENARIO_TEST` the same way. Tests run in throwaway databases named after the configured one (`MigrationTester_Test_mt_…`). Before the integration tests start, any left behind by an interrupted run are dropped.
+
+The PostgreSQL integration tests (`tests/MigrationTester.Tests/PostgreSql/`) only need Docker running: Testcontainers starts a PostgreSQL 17 container before the first of them and removes it after the last, also when the run is interrupted. Without Docker they are skipped. To use a server of your own instead, as CI does with its service container, set `MIGRATION_TESTER_PG_TEST`:
+
+```bash
+export MIGRATION_TESTER_PG_TEST='Host=localhost;Port=5432;Database=MigrationTester_Test;Username=postgres;Password=...'
+```
+
+**Providers.** Everything a database does differently lives in `src/MigrationTester/Providers/`: a `DatabaseProvider` (catalog queries, connection strings, script batches, transaction checks, error codes, reading a column's values around its `ALTER COLUMN`) and a `SqlDialect` (identifiers, literals, types, seed statement shapes, failing and lossy conversions, NULL and default semantics, repair hint fragments) per database. The planner and seeder only talk to the dialect. SQL Server's script splits at `GO`; PostgreSQL's splits into statements (`PostgreSqlScript`), so the values can be read right around the `ALTER COLUMN ... TYPE` statement.
+
+The PostgreSQL schema cases (`PostgreSql/PostgreSqlSchemaCaseTests.cs`) cover each scenario kind, join tables, a moved foreign key, the data-loss cases, a type change the migration makes explicit first, and the same report in both run modes.
 
 **Schema cases.** `tests/MigrationTester.Tests/SchemaCases/` runs end to end over hand-written migrations for common schema shapes: rowversion, computed and temporal tables, GUID keys, non-`dbo` schemas, required foreign keys, filtered unique indexes, type narrowing, HasData ids, seed rows rejected by a CHECK constraint, statements outside a transaction, a broken earlier migration, renames, columns added and used in the same migration, a foreign key added again or moved to another table, join tables. `ModeEquivalenceTests` checks that the default transactional mode reports exactly what `RebuildDatabaseForEachMigration` reports for each of them, and that a context with `EnableRetryOnFailure` reports the same as one without.
 
@@ -45,7 +55,7 @@ dotnet format analyzers src/MigrationTester/MigrationTester.csproj --diagnostics
 
 ## CI
 
-`.github/workflows/ci.yml` runs on pushes to `main` and on pull requests. It builds, runs every test against a SQL Server container, packs the library, builds the examples against the packed nupkg, and uploads the nupkg as a run artifact.
+`.github/workflows/ci.yml` runs on pushes to `main` and on pull requests. It builds, runs every test against SQL Server and PostgreSQL containers, packs the library, builds the examples against the packed nupkg, and uploads the nupkg as a run artifact.
 
 ## Releasing
 

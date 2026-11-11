@@ -1,51 +1,137 @@
-using System.Data;
 using System.Data.Common;
+using System.Globalization;
+using System.Text;
+using Microsoft.Data.SqlClient;
+using MigrationTester.Schema;
 
-namespace MigrationTester.Schema;
+namespace MigrationTester.Providers.SqlServer;
 
-/// <summary>
-/// Reads tables, columns, unique keys and foreign keys from a live SQL Server database (after migrate to N-1).
-/// Covers every user schema; skips system-versioned history tables and the EF migrations history table.
-/// </summary>
-internal static class RelationalSchemaIntrospector
+/// <summary>SQL Server through Microsoft.EntityFrameworkCore.SqlServer.</summary>
+internal sealed partial class SqlServerProvider : DatabaseProvider
 {
+    // Skips system-versioned history tables, which SQL Server fills itself.
     private const string UserTableFilter = "t.is_ms_shipped = 0 AND t.temporal_type <> 1";
 
-    public static async Task<RelationalSchemaModel> LoadAsync(
-        DbConnection connection,
-        string? historyTableSchema,
-        string historyTableName,
-        CancellationToken cancellationToken = default,
-        IEnumerable<string>? collations = null)
+    private SqlServerProvider()
     {
-        bool shouldClose = connection.State == ConnectionState.Closed;
-        if (shouldClose)
-        {
-            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        }
+    }
 
-        try
+    public static SqlServerProvider Instance { get; } = new();
+
+    public override string Name => "SQL Server";
+
+    public override string EfProviderName => "Microsoft.EntityFrameworkCore.SqlServer";
+
+    public override string ConfigureMethod => "UseSqlServer";
+
+    public override SqlDialect Dialect => SqlServerDialect.Instance;
+
+    public override string DefaultSchema => "dbo";
+
+    public override string DatabaseKeyword => "Initial Catalog";
+
+    public override int MaxBaseNameLength => 100;
+
+    public override void EnsureCanRepoint(DbConnectionStringBuilder connectionString)
+    {
+        if (connectionString.TryGetValue("AttachDbFilename", out object? file) && file is string { Length: > 0 })
         {
-            return await LoadSqlServer(connection, historyTableSchema, historyTableName, collations ?? [], cancellationToken)
-                .ConfigureAwait(false);
-        }
-        finally
-        {
-            if (shouldClose)
-            {
-                await connection.CloseAsync().ConfigureAwait(false);
-            }
+            throw new NotSupportedException(
+                "Connection strings with AttachDbFilename are not supported; use a server connection string (LocalDB works with Server=(localdb)\\MSSQLLocalDB).");
         }
     }
 
-    private static async Task<RelationalSchemaModel> LoadSqlServer(
+    /// <summary>Splits a SQL Server migration script on its <c>GO</c> batch separators.</summary>
+    public override IReadOnlyList<string> ScriptBatches(string script)
+    {
+        var batches = new List<string>();
+        var current = new StringBuilder();
+        foreach (string rawLine in script.Split('\n'))
+        {
+            string line = rawLine.TrimEnd('\r');
+            if (string.Equals(line.Trim(), "GO", StringComparison.OrdinalIgnoreCase))
+            {
+                Flush();
+            }
+            else
+            {
+                current.AppendLine(line);
+            }
+        }
+
+        Flush();
+        return batches;
+
+        void Flush()
+        {
+            string batch = current.ToString().Trim();
+            if (batch.Length > 0)
+            {
+                batches.Add(batch);
+            }
+
+            current.Clear();
+        }
+    }
+
+    /// <summary><c>XACT_STATE()</c> is 1: 0 means no transaction, -1 one that can only be rolled back.</summary>
+    public override async Task<bool> IsUsableAsync(DbTransaction transaction, CancellationToken cancellationToken)
+    {
+        if (transaction.Connection is not { } connection)
+        {
+            return false;
+        }
+
+        await using var cmd = connection.CreateCommand();
+        cmd.Transaction = transaction;
+        cmd.CommandText = "SELECT XACT_STATE();";
+        return Convert.ToInt32(await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture) == 1;
+    }
+
+    public override DatabaseError? FindError(Exception exception)
+    {
+        if (Find<SqlException>(exception) is not { } sql)
+        {
+            return null;
+        }
+
+        var errors = sql.Errors.Cast<SqlError>().ToList();
+        return new DatabaseError(
+            $"SQL Server error {sql.Number}: {sql.Message}",
+            string.Join(" ", errors.Select(static e => e.Message)),
+            errors.SelectMany(static e => KindsFor(e.Number)).ToHashSet(),
+            // 547 names the FOREIGN KEY or CHECK constraint that rejected the data.
+            errors.Exists(static e => e.Number == 547));
+    }
+
+    /// <summary>Scenario kinds a SQL Server error number points to.</summary>
+    internal static IEnumerable<ScenarioKind> KindsFor(int errorNumber) => errorNumber switch
+    {
+        // CREATE UNIQUE INDEX / ADD CONSTRAINT found a duplicate key; 2601/2627 are the row-level versions.
+        1505 or 1750 or 2601 or 2627 => [ScenarioKind.DuplicateUniqueIndexOrConstraint],
+        // ALTER TABLE conflicted with a FOREIGN KEY or CHECK constraint.
+        547 => [ScenarioKind.ForeignKeyOrphan, ScenarioKind.CheckConstraintViolation],
+        // Cannot insert the value NULL into column ...
+        515 => [ScenarioKind.NonNullableColumnWithNull],
+        // ALTER TABLE only allows columns to be added that can contain nulls, or have a DEFAULT ...
+        4901 => [ScenarioKind.NotNullColumnAddedWithoutDefault],
+        // String or binary data would be truncated.
+        2628 or 8152 => [ScenarioKind.MaxLengthExceededAfterShrink],
+        // Conversion failed / error converting / out-of-range date / XML parsing.
+        241 or 242 or 245 or 8114 or 8169 or (>= 9400 and <= 9499) => [ScenarioKind.ColumnTypeConversionIncompatible],
+        // Arithmetic overflow.
+        220 or 232 or 8115 => [ScenarioKind.DecimalPrecisionOverflow, ScenarioKind.ColumnTypeConversionIncompatible],
+        _ => []
+    };
+
+    protected override async Task<RelationalSchemaModel> ReadSchemaAsync(
         DbConnection connection,
         string? historyTableSchema,
         string historyTableName,
         IEnumerable<string> collations,
         CancellationToken cancellationToken)
     {
-        string defaultSchema = "dbo";
+        string defaultSchema = DefaultSchema;
         await using (var cmd = connection.CreateCommand())
         {
             cmd.CommandText = "SELECT SCHEMA_NAME();";
@@ -107,7 +193,7 @@ internal static class RelationalSchemaIntrospector
                     return;
                 }
 
-                var type = SqlType.FromCatalog(reader.GetString(3), reader.GetInt16(4), reader.GetByte(5), reader.GetByte(6));
+                var type = SqlServerDialect.Instance.FromCatalog(reader.GetString(3), reader.GetInt16(4), reader.GetByte(5), reader.GetByte(6));
                 list.Add(new ColumnMetadata
                 {
                     Name = reader.GetString(2),
@@ -234,6 +320,7 @@ internal static class RelationalSchemaIntrospector
 
         return new RelationalSchemaModel
         {
+            Dialect = Dialect,
             DefaultSchema = defaultSchema,
             DatabaseCodePage = databaseCodePage,
             CodePages = codePages,
@@ -247,20 +334,5 @@ internal static class RelationalSchemaIntrospector
                 })
                 .ToList()
         };
-    }
-
-    private static async Task ReadAsync(
-        DbConnection connection,
-        string sql,
-        Action<DbDataReader> onRow,
-        CancellationToken cancellationToken)
-    {
-        await using var cmd = connection.CreateCommand();
-        cmd.CommandText = sql;
-        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-            onRow(reader);
-        }
     }
 }
