@@ -4,6 +4,10 @@ All notable changes to MigrationTester. Versions follow [Semantic Versioning](ht
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-11
+
+Migrations can now be tested on PostgreSQL as well as SQL Server.
+
 ### Added
 
 - PostgreSQL, through Npgsql.EntityFrameworkCore.PostgreSQL. The runner picks the database from the context's provider, so a context configured with `UseNpgsql(...)` works with the same options and API. The package takes no dependency on Npgsql: it reads PostgreSQL's errors through `DbException.SqlState`. What differs from SQL Server:
@@ -120,7 +124,8 @@ First preview release.
 - Each migration runs on its planted data in a transaction that is rolled back, so a run costs about two migration runs per migration; `RebuildDatabaseForEachMigration` recreates the database for every migration instead.
 - `RequireAllScenariosSeeded` to fail migrations whose scenarios could not all be planted.
 
-[Unreleased]: https://github.com/oklar/migrationtester/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/oklar/migrationtester/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/oklar/migrationtester/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/oklar/migrationtester/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/oklar/migrationtester/compare/v0.1.0-preview.5...v0.1.0
 [0.1.0-preview.5]: https://github.com/oklar/migrationtester/compare/v0.1.0-preview.4...v0.1.0-preview.5
