@@ -3,24 +3,20 @@ using Npgsql;
 namespace MigrationTester.Tests;
 
 /// <summary>
-/// The PostgreSQL server for integration tests. They run when MIGRATION_TESTER_PG_TEST holds a connection string, as
-/// in CI, and are skipped otherwise.
+/// The PostgreSQL server for integration tests: one of your own in MIGRATION_TESTER_PG_TEST, as in CI, or else a
+/// container the tests start (see <see cref="PostgreSql.PostgreSqlIntegrationFixture"/>).
 /// </summary>
 public static class TestPostgreSqlConfig
 {
-    public const string SkipReason = "Set MIGRATION_TESTER_PG_TEST to a PostgreSQL connection string to run the PostgreSQL integration tests.";
+    /// <summary>Database name in the connection string of a started container; the base for the runner's throwaway databases.</summary>
+    public const string TestDatabaseName = "MigrationTester_Test";
 
-    /// <summary>Its database name is the base for the runner's throwaway databases (<c>…_mt_…</c>).</summary>
-    public static string? TestRunConnectionString => Environment.GetEnvironmentVariable("MIGRATION_TESTER_PG_TEST");
+    /// <summary>A server of your own, or null to have the tests start a container.</summary>
+    public static string? ConfiguredConnectionString => Environment.GetEnvironmentVariable("MIGRATION_TESTER_PG_TEST");
 
     /// <summary>Drops the test database and the throwaway databases derived from it, which an interrupted run may leave.</summary>
-    public static async Task DropTestDatabasesAsync(CancellationToken cancellationToken)
+    public static async Task DropTestDatabasesAsync(string connectionString, CancellationToken cancellationToken)
     {
-        if (TestRunConnectionString is not { } connectionString)
-        {
-            return;
-        }
-
         var builder = new NpgsqlConnectionStringBuilder(connectionString);
         string name = builder.Database ?? "";
         builder.Database = "postgres";

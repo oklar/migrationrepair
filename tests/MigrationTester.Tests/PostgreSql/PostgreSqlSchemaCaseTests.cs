@@ -4,25 +4,12 @@ using Xunit;
 
 namespace MigrationTester.Tests.PostgreSql;
 
-/// <summary>Groups the PostgreSQL integration tests and clears databases an interrupted earlier run left behind.</summary>
-[CollectionDefinition("PostgreSql integration")]
-public sealed class PostgreSqlIntegrationCollection : ICollectionFixture<PostgreSqlIntegrationFixture>
-{
-}
-
-public sealed class PostgreSqlIntegrationFixture : IAsyncLifetime
-{
-    public async ValueTask InitializeAsync() => await TestPostgreSqlConfig.DropTestDatabasesAsync(TestContext.Current.CancellationToken);
-
-    public ValueTask DisposeAsync() => default;
-}
-
 /// <summary>
-/// End-to-end runs against PostgreSQL (see <see cref="TestPostgreSqlConfig"/>): the data is planted and each
+/// End-to-end runs against PostgreSQL (see <see cref="PostgreSqlIntegrationFixture"/>): the data is planted and each
 /// migration fails on it, matched by its SQLSTATE.
 /// </summary>
 [Collection("PostgreSql integration")]
-public sealed class PostgreSqlSchemaCaseTests
+public sealed class PostgreSqlSchemaCaseTests(PostgreSqlIntegrationFixture server)
 {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
@@ -165,19 +152,19 @@ public sealed class PostgreSqlSchemaCaseTests
     private static string[] Outcomes(MigrationTestReport report) =>
         [.. report.Steps.Select(static s => $"{s.MigrationId} {s.Outcome} {string.Join(",", s.FailingScenarios.Select(static f => f.Kind))}")];
 
-    private static MigrationTestOptions Options<TContext>(Func<DbContextOptions<TContext>, TContext> create, bool rebuild = false)
+    private MigrationTestOptions Options<TContext>(Func<DbContextOptions<TContext>, TContext> create, bool rebuild = false)
         where TContext : DbContext
     {
-        Assert.SkipWhen(TestPostgreSqlConfig.TestRunConnectionString is null, TestPostgreSqlConfig.SkipReason);
+        Assert.SkipWhen(server.ConnectionString is null, server.SkipReason);
         var options = new DbContextOptionsBuilder<TContext>()
-            .UseNpgsql(TestPostgreSqlConfig.TestRunConnectionString)
+            .UseNpgsql(server.ConnectionString)
             // Hand-written migrations have no model snapshot to compare against.
             .ConfigureWarnings(w => w.Ignore(RelationalEventId.PendingModelChangesWarning))
             .Options;
         return new MigrationTestOptions { CreateContext = () => create(options), RebuildDatabaseForEachMigration = rebuild };
     }
 
-    private static Task<MigrationStepResult> RunAsync<TContext>(
+    private Task<MigrationStepResult> RunAsync<TContext>(
         string migrationId,
         Func<DbContextOptions<TContext>, TContext> create)
         where TContext : DbContext

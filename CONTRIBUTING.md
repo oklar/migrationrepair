@@ -25,11 +25,10 @@ export MIGRATION_TESTER_SQL_TEST='Server=localhost\SQLEXPRESS;Database=Migration
 
 The examples use `MIGRATION_TESTER_SCENARIO_TEST` the same way. Tests run in throwaway databases named after the configured one (`MigrationTester_Test_mt_…`). Before the integration tests start, any left behind by an interrupted run are dropped.
 
-The PostgreSQL integration tests (`tests/MigrationTester.Tests/PostgreSql/`) run when `MIGRATION_TESTER_PG_TEST` holds a connection string, and are skipped otherwise. With PostgreSQL in Docker:
+The PostgreSQL integration tests (`tests/MigrationTester.Tests/PostgreSql/`) only need Docker running: Testcontainers starts a PostgreSQL 17 container before the first of them and removes it after the last, also when the run is interrupted. Without Docker they are skipped. To use a server of your own instead, as CI does with its service container, set `MIGRATION_TESTER_PG_TEST`:
 
 ```bash
-docker run -e POSTGRES_PASSWORD=MigrationTester_Local1 -p 5432:5432 -d postgres:17
-export MIGRATION_TESTER_PG_TEST='Host=localhost;Port=5432;Database=MigrationTester_Test;Username=postgres;Password=MigrationTester_Local1'
+export MIGRATION_TESTER_PG_TEST='Host=localhost;Port=5432;Database=MigrationTester_Test;Username=postgres;Password=...'
 ```
 
 **Providers.** Everything a database does differently lives in `src/MigrationTester/Providers/`: a `DatabaseProvider` (catalog queries, connection strings, script batches, transaction checks, error codes, reading a column's values around its `ALTER COLUMN`) and a `SqlDialect` (identifiers, literals, types, seed statement shapes, failing and lossy conversions, NULL and default semantics, repair hint fragments) per database. The planner and seeder only talk to the dialect. SQL Server's script splits at `GO`; PostgreSQL's splits into statements (`PostgreSqlScript`), so the values can be read right around the `ALTER COLUMN ... TYPE` statement.
