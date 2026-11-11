@@ -4,6 +4,19 @@ All notable changes to MigrationTester. Versions follow [Semantic Versioning](ht
 
 ## [Unreleased]
 
+### Added
+
+- Column type changes that SQL Server converts without an error but that change values now fail the migration, as `ScenarioKind.ColumnTypeConversionLossy`. One row gets a value the change alters, such as an emoji in a column going from `nvarchar` to `varchar` (it becomes `??`), `0.0001` when a `decimal` scale shrinks to 2, a time of day in a column becoming `date`, an offset in a `datetimeoffset` becoming `datetime2`, `'007'` in text becoming `int`, or `1234567.891` in a `float` becoming text. Right before the `ALTER COLUMN` MigrationTester reads the column's values, and right after it fails the step if one does not come back when converted to the old type. The step's summary shows each value and what it became.
+- The repair hint for such a change is the statement that makes the loss explicit, to put before the `AlterColumn`: `UPDATE … SET [c] = CAST(CAST([c] AS <new type>) AS <old type>)`, which stores in the old column what the new type keeps, so the type change itself changes nothing. It also says how to keep the values instead (a Unicode type or `_UTF8` collation, `SWITCHOFFSET` to UTC for offsets, a copy with a lossless `CONVERT` style for numbers and dates becoming text).
+- The sample project's migration 10 changes a customer name from `nvarchar` to `varchar` and fails on an emoji.
+
+### Changed
+
+- Migrations whose type change alters values now fail; before, they passed. Type changes that keep every value (widening, `varchar` to `nvarchar`, a UTF-8 collation, `decimal` or `datetime2` to text) or only reformat one (text to `uniqueidentifier`, `nvarchar` to `nchar`) are not reported, and neither are drops: a column dropped later in the same `Up()` is `NotApplicable`. A step that fails this way has `Outcome = Failed` with a null `Exception`, and the changed scenarios in `FailingScenarios`.
+- Migrations that run outside a transaction, the last step under `KeepDatabase`, and every step under `RebuildDatabaseForEachMigration` now run the migration's script the way the default mode does, in a transaction committed when it succeeds, instead of calling `Migrate`, so every mode checks the same values.
+- Type names in scenario names and reasons include a `datetime2`, `datetimeoffset` or `time` column's fractional-second digits, e.g. `datetime2(7)`.
+- Dependencies: EF Core 10.0.14 for the tests and sample, `System.Security.Cryptography.Pkcs` 10.0.14.
+
 ## [0.1.0] - 2026-10-27
 
 First stable release: the same code and API as 0.1.0-preview.5, now recorded in `PublicAPI.Shipped.txt`.

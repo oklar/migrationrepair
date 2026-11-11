@@ -28,5 +28,14 @@ public enum ScenarioKind
     ColumnTypeConversionIncompatible,
 
     /// <summary>A value with more integer digits than a changed <c>decimal</c> precision or scale allows.</summary>
-    DecimalPrecisionOverflow
+    DecimalPrecisionOverflow,
+
+    /// <summary>
+    /// A value the column's new type holds only as a different value, which SQL Server converts without an error:
+    /// <c>N'x😀'</c> becomes <c>'x??'</c> in a column going from <c>nvarchar</c> to <c>varchar</c>, <c>1.2345</c> becomes
+    /// <c>1.23</c> when the scale shrinks, a time of day is dropped in a column becoming <c>date</c>. The step fails
+    /// when a value the column holds right before its <c>ALTER COLUMN</c> does not come back right after it, so
+    /// <c>Up()</c> can change such values on purpose first.
+    /// </summary>
+    ColumnTypeConversionLossy
 }

@@ -41,7 +41,7 @@ public sealed class ScenarioDbContext : DbContext
         {
             e.ToTable("Customers");
             e.HasKey(x => x.Id);
-            e.Property(x => x.Name).IsRequired().HasMaxLength(256);
+            e.Property(x => x.Name).IsRequired().HasMaxLength(256).IsUnicode(false);
         });
 
         modelBuilder.Entity<Order>(e =>

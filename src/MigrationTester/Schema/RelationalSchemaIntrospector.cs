@@ -15,7 +15,8 @@ internal static class RelationalSchemaIntrospector
         DbConnection connection,
         string? historyTableSchema,
         string historyTableName,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IEnumerable<string>? collations = null)
     {
         bool shouldClose = connection.State == ConnectionState.Closed;
         if (shouldClose)
@@ -25,7 +26,7 @@ internal static class RelationalSchemaIntrospector
 
         try
         {
-            return await LoadSqlServer(connection, historyTableSchema, historyTableName, cancellationToken)
+            return await LoadSqlServer(connection, historyTableSchema, historyTableName, collations ?? [], cancellationToken)
                 .ConfigureAwait(false);
         }
         finally
@@ -41,6 +42,7 @@ internal static class RelationalSchemaIntrospector
         DbConnection connection,
         string? historyTableSchema,
         string historyTableName,
+        IEnumerable<string> collations,
         CancellationToken cancellationToken)
     {
         string defaultSchema = "dbo";
@@ -87,7 +89,8 @@ internal static class RelationalSchemaIntrospector
                 c.is_identity,
                 c.is_computed,
                 CASE WHEN c.generated_always_type <> 0 THEN 1 ELSE 0 END AS is_generated_always,
-                CASE WHEN c.default_object_id <> 0 THEN 1 ELSE 0 END AS has_default
+                CASE WHEN c.default_object_id <> 0 THEN 1 ELSE 0 END AS has_default,
+                CONVERT(int, COLLATIONPROPERTY(c.collation_name, 'CodePage')) AS code_page
             FROM sys.columns c
             INNER JOIN sys.tables t ON t.object_id = c.object_id
             INNER JOIN sys.schemas s ON s.schema_id = t.schema_id
@@ -104,15 +107,17 @@ internal static class RelationalSchemaIntrospector
                     return;
                 }
 
+                var type = SqlType.FromCatalog(reader.GetString(3), reader.GetInt16(4), reader.GetByte(5), reader.GetByte(6));
                 list.Add(new ColumnMetadata
                 {
                     Name = reader.GetString(2),
-                    Type = SqlType.FromCatalog(reader.GetString(3), reader.GetInt16(4), reader.GetByte(5), reader.GetByte(6)),
+                    Type = type,
                     IsNullable = reader.GetBoolean(7),
                     IsIdentity = reader.GetBoolean(8),
                     IsComputed = reader.GetBoolean(9),
                     IsGeneratedAlways = reader.GetInt32(10) != 0,
-                    HasDefault = reader.GetInt32(11) != 0
+                    HasDefault = reader.GetInt32(11) != 0,
+                    CodePage = type.IsString && !type.IsUnicodeString && !reader.IsDBNull(12) ? reader.GetInt32(12) : null
                 });
             },
             cancellationToken).ConfigureAwait(false);
@@ -200,9 +205,38 @@ internal static class RelationalSchemaIntrospector
             },
             cancellationToken).ConfigureAwait(false);
 
+        int databaseCodePage = 1252;
+        await ReadAsync(connection, """
+            SELECT CONVERT(int, COLLATIONPROPERTY(CONVERT(sysname, DATABASEPROPERTYEX(DB_NAME(), 'Collation')), 'CodePage'));
+            """,
+            reader => databaseCodePage = reader.IsDBNull(0) ? databaseCodePage : reader.GetInt32(0),
+            cancellationToken).ConfigureAwait(false);
+
+        // Code pages of the collations a migration names, e.g. for a column it moves to another collation.
+        var codePages = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var named = collations.Where(static c => !string.IsNullOrWhiteSpace(c)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (named.Count > 0)
+        {
+            string values = string.Join(", ", named.Select(static c => $"(N'{c.Replace("'", "''", StringComparison.Ordinal)}')"));
+            await ReadAsync(connection, $"""
+                SELECT n.name, CONVERT(int, COLLATIONPROPERTY(n.name, 'CodePage'))
+                FROM (VALUES {values}) n(name);
+                """,
+                reader =>
+                {
+                    if (!reader.IsDBNull(1))
+                    {
+                        codePages[reader.GetString(0)] = reader.GetInt32(1);
+                    }
+                },
+                cancellationToken).ConfigureAwait(false);
+        }
+
         return new RelationalSchemaModel
         {
             DefaultSchema = defaultSchema,
+            DatabaseCodePage = databaseCodePage,
+            CodePages = codePages,
             Tables = tables
                 .Select(t => new TableMetadata
                 {

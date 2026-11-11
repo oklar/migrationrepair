@@ -3,7 +3,7 @@ using Microsoft.EntityFrameworkCore;
 namespace MigrationTester.Examples;
 
 /// <summary>
-/// The sample's nine migrations are written to break: 02–09 each fail on a different kind of data,
+/// The sample's ten migrations are written to break: 02–10 each fail on a different kind of data,
 /// and 01 has no earlier data. Each run uses its own throwaway database, dropped afterwards.
 /// </summary>
 public sealed class MigrationDemoTests
@@ -22,7 +22,7 @@ public sealed class MigrationDemoTests
     {
         var report = await MigrationTestRunner.RunAllAsync(Options, TestContext.Current.CancellationToken);
 
-        Assert.Equal(9, report.Steps.Count);
+        Assert.Equal(10, report.Steps.Count);
         Assert.Equal(MigrationStepOutcome.Passed, report.Steps[0].Outcome);
 
         AssertBrokenBy(report.Steps[1], ScenarioKind.ForeignKeyOrphan);
@@ -33,10 +33,11 @@ public sealed class MigrationDemoTests
         AssertBrokenBy(report.Steps[6], ScenarioKind.ColumnTypeConversionIncompatible);
         AssertBrokenBy(report.Steps[7], ScenarioKind.DecimalPrecisionOverflow);
         AssertBrokenBy(report.Steps[8], ScenarioKind.CheckConstraintViolation);
+        AssertBrokenBy(report.Steps[9], ScenarioKind.ColumnTypeConversionLossy);
     }
 
     /// <summary>
-    /// How you would test your own project: one test case per migration. Here 02–09 fail by design, so
+    /// How you would test your own project: one test case per migration. Here 02–10 fail by design, so
     /// it only runs when requested: <c>dotnet test -- xUnit.Explicit=only</c>.
     /// </summary>
     [Theory(Explicit = true)]

@@ -1,6 +1,6 @@
 # MigrationTester.Examples
 
-A consumer sample: an EF Core model with nine SQL Server migrations, and tests that run MigrationTester over them. It builds against the library source by default, so there is nothing to pack first.
+A consumer sample: an EF Core model with ten SQL Server migrations, and tests that run MigrationTester over them. It builds against the library source by default, so there is nothing to pack first.
 
 ## Prerequisites
 
@@ -29,6 +29,7 @@ Defaults use **Windows auth** on the default local instance, with databases `Mig
 | 07 | `ChangeTagExternalIdToGuid` | A `Tags.ExternalId` that is not a GUID |
 | 08 | `ShrinkProductPricePrecision` | A `Products.Price` too large for `decimal(10,2)` |
 | 09 | `AddCheckConstraintPositivePrice` | A `Products.Price` of 0, which the new `[Price] > 0` constraint rejects |
+| 10 | `ChangeCustomerNameToVarchar` | A `Customers.Name` holding an emoji, which `varchar` keeps only as `??`: SQL Server converts it without an error, so the migration would lose the character silently |
 
 ## Commands
 
@@ -38,9 +39,9 @@ From the repository root:
 dotnet test examples/MigrationTester.Examples
 ```
 
-`Each_broken_migration_fails_on_its_kind_of_data` asserts that 02–09 fail, each matched to its kind of data, and that 01 passes, so it is green.
+`Each_broken_migration_fails_on_its_kind_of_data` asserts that 02–10 fail, each matched to its kind of data, and that 01 passes, so it is green.
 
-`Migration_handles_data_that_exists_before_it` is the pattern you would use in your own project: one `[Theory]` case per migration, each calling `ThrowIfFailed()`. Here 02–09 fail by design and show the full report with T-SQL repair hints, so it is `Explicit`; run it by asking for it:
+`Migration_handles_data_that_exists_before_it` is the pattern you would use in your own project: one `[Theory]` case per migration, each calling `ThrowIfFailed()`. Here 02–10 fail by design and show the full report with T-SQL repair hints, so it is `Explicit`; run it by asking for it:
 
 ```bash
 dotnet test examples/MigrationTester.Examples --logger "console;verbosity=detailed" -- xUnit.Explicit=only
