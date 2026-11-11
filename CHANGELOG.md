@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to MigrationTester. Versions follow [Semantic Versioning](https://semver.org); before 1.0 any release may break the API.
+All notable changes to MigrationTester. Versions follow [Semantic Versioning](https://semver.org): only a new major version may break the API.
 
 ## [Unreleased]
 

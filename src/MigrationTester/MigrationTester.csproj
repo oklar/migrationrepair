@@ -18,8 +18,11 @@
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
     <EnablePackageValidation>true</EnablePackageValidation>
-    <!-- Packing fails on breaking changes against this release; see CONTRIBUTING.md, Stable releases. -->
-    <PackageValidationBaselineVersion>0.1.0</PackageValidationBaselineVersion>
+    <!--
+      CI passes PackageValidationBaselineVersion: the newest release with the same major version, so packing fails
+      when a minor or patch version breaks it (see CONTRIBUTING.md, Versions and compatibility).
+    -->
+
   </PropertyGroup>
 
   <ItemGroup>

@@ -79,4 +79,13 @@ Releases are published from GitHub Actions with [nuget.org trusted publishing](h
 ### Stable releases
 
 - Before tagging, move the entries of `PublicAPI.Unshipped.txt` to `PublicAPI.Shipped.txt`, so Shipped holds exactly what the release ships. New API added after that goes to Unshipped again.
-- Once the version is on nuget.org, set `<PackageValidationBaselineVersion>` in `src/MigrationTester/MigrationTester.csproj` to it, so packing fails on accidental breaking changes against it. A deliberate break needs the baseline raised, or a suppression file, in the same change.
+
+### Versions and compatibility
+
+Versions follow [semantic versioning](https://semver.org): a new major version (`2.0.0`) may break the API, a minor version (`2.1.0`) adds to it, a patch (`2.1.3`) fixes bugs. CI holds every package to that: before packing, `.github/scripts/package-validation-baseline.sh` finds the newest stable release on nuget.org with the same major version, and `dotnet pack` fails (error `CP0002` and friends) when the package removes or changes anything that release has. The first release of a new major version has nothing to compare with, so it may break. Nothing needs updating after a release.
+
+To make a breaking change, raise the major version (`VersionPrefix` in `Directory.Build.props`, and the tag). To run the same check locally:
+
+```bash
+dotnet pack src/MigrationTester -c Release -p:PackageValidationBaselineVersion=$(bash .github/scripts/package-validation-baseline.sh 0.2.0)
+```
