@@ -63,6 +63,14 @@ jobs:
           echo "::error::Set the NUGET_USER repository variable to your nuget.org username (see CONTRIBUTING.md)."
           exit 1
 
+      # Semantic versioning: the package must not break the newest release with the same major version. Set before
+      # restore, which downloads that release; MSBuild reads the environment variable as a property.
+      - name: Find the release to stay compatible with
+        run: |
+          baseline="$(bash .github/scripts/package-validation-baseline.sh "${{ steps.version.outputs.version }}")"
+          echo "Checking compatibility with: ${baseline:-nothing (first release of this major version)}"
+          echo "PackageValidationBaselineVersion=$baseline" >> "$GITHUB_ENV"
+
       - name: Restore
         run: dotnet restore MigrationTester.slnx
 

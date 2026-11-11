@@ -49,6 +49,14 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      # Semantic versioning: the package must not break the newest release with the same major version. Set before
+      # restore, which downloads that release; MSBuild reads the environment variable as a property.
+      - name: Find the release to stay compatible with
+        run: |
+          baseline="$(bash .github/scripts/package-validation-baseline.sh "$(dotnet msbuild src/MigrationTester -getProperty:Version)")"
+          echo "Checking compatibility with: ${baseline:-nothing (first release of this major version)}"
+          echo "PackageValidationBaselineVersion=$baseline" >> "$GITHUB_ENV"
+
       - name: Restore
         run: dotnet restore MigrationTester.slnx
 
