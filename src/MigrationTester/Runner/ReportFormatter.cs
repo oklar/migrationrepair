@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.Text;
-using Microsoft.Data.SqlClient;
 
 namespace MigrationTester.Runner;
 
@@ -50,7 +49,7 @@ internal static class ReportFormatter
         {
             case MigrationStepOutcome.Error:
                 sb.AppendLine($"ERROR {step.MigrationId}: could not test it. {step.ErrorStage} failed:");
-                sb.AppendLine(ErrorText(step.Exception));
+                sb.AppendLine(ErrorText(step));
                 break;
 
             case MigrationStepOutcome.Failed when step.Exception is null:
@@ -60,7 +59,7 @@ internal static class ReportFormatter
 
             case MigrationStepOutcome.Failed:
                 sb.AppendLine($"FAILED {step.MigrationId}: Up() failed on data that is valid before it runs.");
-                sb.AppendLine(ErrorText(step.Exception));
+                sb.AppendLine(ErrorText(step));
                 AppendFailingScenarios(sb, step);
                 break;
 
@@ -131,22 +130,14 @@ internal static class ReportFormatter
         }
     }
 
-    private static string ErrorText(Exception? exception)
+    private static string ErrorText(MigrationStepResult step)
     {
-        if (exception is null)
+        if (step.Exception is not { } exception)
         {
             return "";
         }
 
-        for (var e = exception; e is not null; e = e.InnerException)
-        {
-            if (e is SqlException sql)
-            {
-                return $"SQL Server error {sql.Number}: {sql.Message}";
-            }
-        }
-
-        return $"{exception.GetType().Name}: {exception.Message}";
+        return step.Provider?.FindError(exception)?.Description ?? $"{exception.GetType().Name}: {exception.Message}";
     }
 
     private static string Planted(MigrationStepResult step)

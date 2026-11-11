@@ -8,18 +8,6 @@ namespace MigrationTester.Runner;
 /// <summary>Reads a context's migrations through EF Core's public migrations API.</summary>
 internal static class MigrationReader
 {
-    public const string SqlServerProvider = "Microsoft.EntityFrameworkCore.SqlServer";
-
-    public static void EnsureSqlServer(DbContext context)
-    {
-        string? provider = context.Database.ProviderName;
-        if (!string.Equals(provider, SqlServerProvider, StringComparison.Ordinal))
-        {
-            throw new NotSupportedException(
-                $"MigrationTester supports SQL Server only, but this context uses '{provider ?? "no provider"}'. Configure it with UseSqlServer(...).");
-        }
-    }
-
     public static List<string> GetMigrationIds(DbContext context) => [.. context.Database.GetMigrations()];
 
     /// <summary>Full migration id for an id or a migration name.</summary>

@@ -1,12 +1,12 @@
 using System.Data.Common;
 using System.Diagnostics;
-using System.Globalization;
-using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
+using Microsoft.EntityFrameworkCore.Storage;
 using MigrationTester.Planning;
+using MigrationTester.Providers;
 using MigrationTester.Schema;
 using MigrationTester.Seeding;
 
@@ -32,6 +32,7 @@ internal static class StepRunner
         CancellationToken cancellationToken)
     {
         var stopwatch = Stopwatch.StartNew();
+        var provider = database.Provider;
         await using var context = database.CreateContext(options.CreateContext);
 
         var all = MigrationReader.GetMigrationIds(context);
@@ -53,14 +54,15 @@ internal static class StepRunner
                 ErrorStage = errorStage,
                 Scenarios = scenarios ?? [],
                 FailingScenarios = outcome == MigrationStepOutcome.Failed && scenarios is not null
-                    ? FailingScenarios(exception, scenarios)
+                    ? FailingScenarios(exception, scenarios, provider)
                     : [],
                 Warnings = warnings,
                 SqlExecuted = sql ?? [],
                 ContainsRawSql = rawSql,
                 DatabaseName = database.Name,
                 Duration = stopwatch.Elapsed,
-                RequireAllScenariosSeeded = options.RequireAllScenariosSeeded
+                RequireAllScenariosSeeded = options.RequireAllScenariosSeeded,
+                Provider = provider
             };
 
         IReadOnlyList<MigrationOperation> operations;
@@ -97,7 +99,7 @@ internal static class StepRunner
         if (previous is null)
         {
             // First migration: no tables exist before it, so nothing is planted and the database stays clean.
-            var none = ScenarioPlanner.Plan(operations, RelationalSchemaModel.Empty);
+            var none = ScenarioPlanner.Plan(operations, RelationalSchemaModel.Empty(provider.Dialect, provider.DefaultSchema));
             try
             {
                 await context.Database.MigrateAsync(migrationId, cancellationToken).ConfigureAwait(false);
@@ -114,13 +116,13 @@ internal static class StepRunner
         stage = "Reading and seeding the database at the previous migration";
         bool useTransaction = !options.RebuildDatabaseForEachMigration
             && !(isLastStep && options.KeepDatabase)
-            && !NeedsItsOwnTransaction(operations);
+            && !NeedsItsOwnTransaction(operations, provider);
         if (useTransaction)
         {
             TransactionalRun? run;
             try
             {
-                run = await RunInTransactionAsync(context, previous, migrationId, operations, cancellationToken)
+                run = await RunInTransactionAsync(context, provider, previous, migrationId, operations, cancellationToken)
                     .ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -159,7 +161,7 @@ internal static class StepRunner
         SeedResult seed;
         try
         {
-            seed = await SeedAsync(context, operations, cancellationToken).ConfigureAwait(false);
+            seed = await SeedAsync(context, provider, operations, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -170,7 +172,7 @@ internal static class StepRunner
         ScriptRun script;
         try
         {
-            script = await RunForRealAsync(context, previous, migrationId, operations, seed.Scenarios, cancellationToken)
+            script = await RunForRealAsync(context, provider, previous, migrationId, operations, seed.Scenarios, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -191,9 +193,12 @@ internal static class StepRunner
     /// The scenarios a failed step broke on: those whose <c>ALTER COLUMN</c> changed a value, and those the
     /// migration's error points to.
     /// </summary>
-    private static IReadOnlyList<MigrationScenario> FailingScenarios(Exception? exception, IReadOnlyList<MigrationScenario> scenarios)
+    private static IReadOnlyList<MigrationScenario> FailingScenarios(
+        Exception? exception,
+        IReadOnlyList<MigrationScenario> scenarios,
+        DatabaseProvider provider)
     {
-        var matched = exception is null ? [] : FailureAnalyzer.FailingScenarios(exception, scenarios);
+        var matched = exception is null ? [] : FailureAnalyzer.FailingScenarios(exception, scenarios, provider);
         return [.. scenarios.Where(s => s.Change is not null || matched.Contains(s))];
     }
 
@@ -267,12 +272,13 @@ internal static class StepRunner
     /// </summary>
     private static async Task<TransactionalRun?> RunInTransactionAsync(
         DbContext context,
+        DatabaseProvider provider,
         string previous,
         string migrationId,
         IReadOnlyList<MigrationOperation> operations,
         CancellationToken cancellationToken)
     {
-        var batches = ScriptBatches(context.GetService<IMigrator>()
+        var batches = provider.ScriptBatches(context.GetService<IMigrator>()
             .GenerateScript(previous, migrationId, MigrationsSqlGenerationOptions.NoTransactions));
         int? timeout = context.Database.GetCommandTimeout();
 
@@ -280,7 +286,7 @@ internal static class StepRunner
         try
         {
             var connection = context.Database.GetDbConnection();
-            var schema = await LoadSchemaAsync(context, connection, operations, cancellationToken).ConfigureAwait(false);
+            var schema = await LoadSchemaAsync(context, provider, connection, operations, cancellationToken).ConfigureAwait(false);
 
             // An ADO.NET transaction, not BEGIN TRANSACTION: under MARS a T-SQL transaction ends with its batch.
             var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
@@ -291,19 +297,19 @@ internal static class StepRunner
                     var seed = await AdversarySeeder.SeedAsync(
                             connection, schema, ScenarioPlanner.Plan(operations, schema), cancellationToken, transaction)
                         .ConfigureAwait(false);
-                    if (await TransactionStateAsync(transaction, cancellationToken).ConfigureAwait(false) != 1)
+                    if (!await provider.IsUsableAsync(transaction, cancellationToken).ConfigureAwait(false))
                     {
                         return null;
                     }
 
                     var script = await ExecuteScriptAsync(
-                            connection, transaction, batches, operations, seed.Scenarios, timeout, cancellationToken)
+                            context, provider, new DbSession(connection, transaction, timeout), batches, operations, seed.Scenarios, cancellationToken)
                         .ConfigureAwait(false);
                     return new TransactionalRun(seed, script);
                 }
                 finally
                 {
-                    // Null once SQL Server has rolled it back itself.
+                    // Null once the database has rolled it back itself.
                     if (transaction.Connection is not null)
                     {
                         await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
@@ -323,13 +329,14 @@ internal static class StepRunner
     /// </summary>
     private static async Task<ScriptRun> RunForRealAsync(
         DbContext context,
+        DatabaseProvider provider,
         string previous,
         string migrationId,
         IReadOnlyList<MigrationOperation> operations,
         IReadOnlyList<MigrationScenario> scenarios,
         CancellationToken cancellationToken)
     {
-        var batches = ScriptBatches(context.GetService<IMigrator>()
+        var batches = provider.ScriptBatches(context.GetService<IMigrator>()
             .GenerateScript(previous, migrationId, MigrationsSqlGenerationOptions.NoTransactions));
         int? timeout = context.Database.GetCommandTimeout();
 
@@ -337,16 +344,18 @@ internal static class StepRunner
         try
         {
             var connection = context.Database.GetDbConnection();
-            if (NeedsItsOwnTransaction(operations))
+            if (NeedsItsOwnTransaction(operations, provider))
             {
-                return await ExecuteScriptAsync(connection, null, batches, operations, scenarios, timeout, cancellationToken)
+                return await ExecuteScriptAsync(
+                        context, provider, new DbSession(connection, null, timeout), batches, operations, scenarios, cancellationToken)
                     .ConfigureAwait(false);
             }
 
             var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
             await using (transaction.ConfigureAwait(false))
             {
-                var script = await ExecuteScriptAsync(connection, transaction, batches, operations, scenarios, timeout, cancellationToken)
+                var script = await ExecuteScriptAsync(
+                        context, provider, new DbSession(connection, transaction, timeout), batches, operations, scenarios, cancellationToken)
                     .ConfigureAwait(false);
                 if (script.Failure is null)
                 {
@@ -372,15 +381,17 @@ internal static class StepRunner
     /// batch and looks for one that did not come back after it.
     /// </summary>
     private static async Task<ScriptRun> ExecuteScriptAsync(
-        DbConnection connection,
-        DbTransaction? transaction,
+        DbContext context,
+        DatabaseProvider provider,
+        DbSession session,
         IReadOnlyList<string> batches,
         IReadOnlyList<MigrationOperation> operations,
         IReadOnlyList<MigrationScenario> scenarios,
-        int? timeout,
         CancellationToken cancellationToken)
     {
         var checkpoints = ColumnCheckpoint.Place(
+            provider,
+            context.GetService<ISqlGenerationHelper>(),
             operations,
             batches,
             scenarios.Where(static s => s.Kind == ScenarioKind.ColumnTypeConversionLossy && s.Status == ScenarioStatus.Planted),
@@ -396,13 +407,13 @@ internal static class StepRunner
             var here = checkpoints.Where(c => c.Batch == i).ToList();
             foreach (var checkpoint in here)
             {
-                await ColumnCheckpointException.WrapAsync(checkpoint.BeforeAsync(connection, transaction, timeout, cancellationToken))
+                await ColumnCheckpointException.WrapAsync(checkpoint.BeforeAsync(session, cancellationToken))
                     .ConfigureAwait(false);
             }
 
             try
             {
-                await ExecuteAsync(connection, transaction, batches[i], timeout, cancellationToken).ConfigureAwait(false);
+                await session.ExecuteAsync(batches[i], cancellationToken).ConfigureAwait(false);
             }
             catch (DbException ex)
             {
@@ -412,7 +423,7 @@ internal static class StepRunner
 
             foreach (var checkpoint in here)
             {
-                if (await ColumnCheckpointException.WrapAsync(checkpoint.AfterAsync(connection, transaction, timeout, cancellationToken))
+                if (await ColumnCheckpointException.WrapAsync(checkpoint.AfterAsync(session, cancellationToken))
                         .ConfigureAwait(false) is { } change)
                 {
                     changes[checkpoint.Scenario] = change;
@@ -426,6 +437,7 @@ internal static class StepRunner
 
     private static async Task<SeedResult> SeedAsync(
         DbContext context,
+        DatabaseProvider provider,
         IReadOnlyList<MigrationOperation> operations,
         CancellationToken cancellationToken)
     {
@@ -433,7 +445,7 @@ internal static class StepRunner
         try
         {
             var connection = context.Database.GetDbConnection();
-            var schema = await LoadSchemaAsync(context, connection, operations, cancellationToken).ConfigureAwait(false);
+            var schema = await LoadSchemaAsync(context, provider, connection, operations, cancellationToken).ConfigureAwait(false);
             return await AdversarySeeder.SeedAsync(connection, schema, ScenarioPlanner.Plan(operations, schema), cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -445,17 +457,18 @@ internal static class StepRunner
 
     private static Task<RelationalSchemaModel> LoadSchemaAsync(
         DbContext context,
+        DatabaseProvider provider,
         DbConnection connection,
         IReadOnlyList<MigrationOperation> operations,
         CancellationToken cancellationToken)
     {
         var relational = RelationalOptionsExtension.Extract(context.GetService<IDbContextOptions>());
-        return RelationalSchemaIntrospector.LoadAsync(
+        return provider.LoadSchemaAsync(
             connection,
             relational.MigrationsHistoryTableSchema,
             relational.MigrationsHistoryTableName ?? HistoryRepository.DefaultTableName,
-            cancellationToken,
-            CollationsNamedBy(operations));
+            CollationsNamedBy(operations),
+            cancellationToken);
     }
 
     /// <summary>Collations the migration's column operations name, whose code pages the planner may need.</summary>
@@ -476,67 +489,6 @@ internal static class StepRunner
     }
 
     /// <summary>Statements EF runs outside any transaction, which a rolled-back run cannot include.</summary>
-    private static bool NeedsItsOwnTransaction(IReadOnlyList<MigrationOperation> operations)
-        => operations.Any(static o => o is SqlOperation { SuppressTransaction: true } or AlterDatabaseOperation);
-
-    /// <summary>Splits a SQL Server migration script on its <c>GO</c> batch separators.</summary>
-    internal static List<string> ScriptBatches(string script)
-    {
-        var batches = new List<string>();
-        var current = new StringBuilder();
-        foreach (string rawLine in script.Split('\n'))
-        {
-            string line = rawLine.TrimEnd('\r');
-            if (string.Equals(line.Trim(), "GO", StringComparison.OrdinalIgnoreCase))
-            {
-                Flush();
-            }
-            else
-            {
-                current.AppendLine(line);
-            }
-        }
-
-        Flush();
-        return batches;
-
-        void Flush()
-        {
-            string batch = current.ToString().Trim();
-            if (batch.Length > 0)
-            {
-                batches.Add(batch);
-            }
-
-            current.Clear();
-        }
-    }
-
-    private static async Task ExecuteAsync(
-        DbConnection connection, DbTransaction? transaction, string sql, int? timeout, CancellationToken cancellationToken)
-    {
-        await using var cmd = connection.CreateCommand();
-        cmd.Transaction = transaction;
-        cmd.CommandText = sql;
-        if (timeout is int seconds)
-        {
-            cmd.CommandTimeout = seconds;
-        }
-
-        await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    /// <summary><c>XACT_STATE()</c>: 1 for a usable transaction, 0 for none, -1 for one that can only be rolled back.</summary>
-    private static async Task<int> TransactionStateAsync(DbTransaction transaction, CancellationToken cancellationToken)
-    {
-        if (transaction.Connection is not { } connection)
-        {
-            return 0;
-        }
-
-        await using var cmd = connection.CreateCommand();
-        cmd.Transaction = transaction;
-        cmd.CommandText = "SELECT XACT_STATE();";
-        return Convert.ToInt32(await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture);
-    }
+    private static bool NeedsItsOwnTransaction(IReadOnlyList<MigrationOperation> operations, DatabaseProvider provider)
+        => operations.Any(o => o is SqlOperation { SuppressTransaction: true } or AlterDatabaseOperation || provider.NeedsItsOwnTransaction(o));
 }

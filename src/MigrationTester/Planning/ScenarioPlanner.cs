@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
+using MigrationTester.Providers;
 using MigrationTester.Schema;
 
 namespace MigrationTester.Planning;
@@ -37,7 +38,10 @@ internal static class ScenarioPlanner
                     break;
                 case AddUniqueConstraintOperation uq:
                     list.Add(Duplicate(
-                        $"Duplicate values for unique constraint '{uq.Name}' on '{uq.Table}'", uq, Target.Of(renames, uq.Schema, uq.Table, uq.Columns)));
+                        $"Duplicate values for unique constraint '{uq.Name}' on '{uq.Table}'",
+                        uq,
+                        Target.Of(renames, uq.Schema, uq.Table, uq.Columns),
+                        schema.Dialect));
                     break;
                 case AddForeignKeyOperation fk:
                     list.Add(ForeignKeyScenario(fk, renames));
@@ -59,7 +63,10 @@ internal static class ScenarioPlanner
                     break;
                 case AddPrimaryKeyOperation pk:
                     list.Add(Duplicate(
-                        $"Duplicate values for new primary key '{pk.Name}' on '{pk.Table}'", pk, Target.Of(renames, pk.Schema, pk.Table, pk.Columns)));
+                        $"Duplicate values for new primary key '{pk.Name}' on '{pk.Table}'",
+                        pk,
+                        Target.Of(renames, pk.Schema, pk.Table, pk.Columns),
+                        schema.Dialect));
                     break;
             }
         }
@@ -70,14 +77,15 @@ internal static class ScenarioPlanner
     private static MigrationScenario UniqueFromIndex(CreateIndexOperation idx, RenameMap renames)
     {
         string name = $"Duplicate values for unique index '{idx.Name}' on '{idx.Table}'";
+        var dialect = renames.Schema.Dialect;
         if (string.IsNullOrWhiteSpace(idx.Filter))
         {
-            return Duplicate(name, idx, Target.Of(renames, idx.Schema, idx.Table, idx.Columns));
+            return Duplicate(name, idx, Target.Of(renames, idx.Schema, idx.Table, idx.Columns), dialect);
         }
 
         if (!NotNullFilter.TryParse(idx.Filter, out var filterColumns))
         {
-            var unfiltered = Duplicate(name, idx, Target.Of(renames, idx.Schema, idx.Table, idx.Columns));
+            var unfiltered = Duplicate(name, idx, Target.Of(renames, idx.Schema, idx.Table, idx.Columns), dialect);
             return unfiltered.Status != ScenarioStatus.Planted
                 ? unfiltered
                 : unfiltered.NotSeeded($"Filter '{idx.Filter}' is not a plain IS NOT NULL filter; duplicate seeds may not satisfy it.");
@@ -88,7 +96,7 @@ internal static class ScenarioPlanner
         int keyCount = (idx.Columns ?? []).Length;
         var target = Target.Of(renames, idx.Schema, idx.Table, [.. idx.Columns ?? [], .. filterColumns]);
         var key = target with { Columns = [.. target.Columns.Take(keyCount)], New = [.. target.New.Take(keyCount)] };
-        var scenario = Duplicate(name, idx, key, notNullFiltered: true);
+        var scenario = Duplicate(name, idx, key, dialect, notNullFiltered: true);
 
         // A filter column this migration adds holds what the existing rows get in it; NULL leaves them out of the index.
         var filterNew = target.New.Skip(keyCount).OfType<NewColumn>().ToList();
@@ -99,7 +107,11 @@ internal static class ScenarioPlanner
 
         return scenario with
         {
-            NotNullFilterColumns = [.. target.Columns.Skip(keyCount).Where((_, i) => target.New[keyCount + i] is null)]
+            NotNullFilterColumns =
+            [
+                .. scenario.NotNullFilterColumns
+                    .Union(target.Columns.Skip(keyCount).Where((_, i) => target.New[keyCount + i] is null), StringComparer.OrdinalIgnoreCase)
+            ]
         };
     }
 
@@ -107,9 +119,10 @@ internal static class ScenarioPlanner
         string name,
         MigrationOperation op,
         Target target,
+        SqlDialect dialect,
         bool notNullFiltered = false)
     {
-        var scenario = new MigrationScenario
+        var scenario = new MigrationScenario(dialect)
         {
             Kind = ScenarioKind.DuplicateUniqueIndexOrConstraint,
             Name = name + Note(target),
@@ -135,14 +148,23 @@ internal static class ScenarioPlanner
         }
 
         // Copies of a row get the same NULL or default in a key column this migration adds as the original;
-        // NULLs count as equal in a unique index.
-        if (Unplantable(scenario, target.Added, nullBreaks: true) is { } unplantable)
+        // NULLs count as equal in a SQL Server unique index, but not in a PostgreSQL one.
+        if (Unplantable(scenario, target.Added, nullBreaks: !dialect.UniqueNullsDistinct) is { } unplantable)
         {
             return unplantable;
         }
 
-        return AlreadyUnique(table, target.Columns, notNullFiltered) is { } existing
-            ? scenario.NotApplicable($"Existing unique key '{existing.Name}' already prevents duplicates in these columns at N-1.")
+        if (AlreadyUnique(table, target.Columns, notNullFiltered) is { } existing)
+        {
+            return scenario.NotApplicable($"Existing unique key '{existing.Name}' already prevents duplicates in these columns at N-1.");
+        }
+
+        // Where NULLs are distinct, the copies only duplicate each other with values in the nullable key columns.
+        return dialect.UniqueNullsDistinct
+            ? scenario with
+            {
+                NotNullFilterColumns = [.. target.Columns.Where((c, i) => target.New[i] is null && table.FindColumn(c) is { IsNullable: true })]
+            }
             : scenario;
     }
 
@@ -162,7 +184,7 @@ internal static class ScenarioPlanner
     {
         var dependent = Target.Of(renames, fk.Schema, fk.Table, fk.Columns);
         var principal = Target.Of(renames, fk.PrincipalSchema, fk.PrincipalTable, fk.PrincipalColumns);
-        var scenario = new MigrationScenario
+        var scenario = new MigrationScenario(renames.Schema.Dialect)
         {
             Kind = ScenarioKind.ForeignKeyOrphan,
             Name = $"Orphan rows in '{fk.Table}' referencing missing '{fk.PrincipalTable}' when FK is added{Note(dependent, principal)}",
@@ -261,7 +283,8 @@ internal static class ScenarioPlanner
         var live = target.RenamedAwayReason is null && added is null ? table?.FindColumn(target.Columns[0]) : null;
         ColumnOperation oldCol = added?.Operation ?? alter.OldColumn;
         string note = Note(target);
-        var baseScenario = new MigrationScenario
+        var dialect = renames.Schema.Dialect;
+        var baseScenario = new MigrationScenario(dialect)
         {
             Kind = ScenarioKind.NonNullableColumnWithNull,
             Name = "",
@@ -285,8 +308,8 @@ internal static class ScenarioPlanner
         }
 
         var oldType = live?.Type
-            ?? SqlType.Resolve(oldCol.ColumnType, oldCol.MaxLength, oldCol.Precision, oldCol.Scale);
-        var newType = SqlType.Resolve(alter.ColumnType, alter.MaxLength, alter.Precision, alter.Scale);
+            ?? dialect.ResolveType(oldCol.ColumnType, oldCol.MaxLength, oldCol.Precision, oldCol.Scale);
+        var newType = dialect.ResolveType(alter.ColumnType, alter.MaxLength, alter.Precision, alter.Scale);
 
         int? newMax = alter.MaxLength ?? newType?.Length;
         int? oldMax = live?.Type.Length ?? oldCol.MaxLength ?? oldType?.Length;
@@ -309,7 +332,7 @@ internal static class ScenarioPlanner
 
         string oldText = live is null ? oldCol.ColumnType ?? from.ToString() : from.ToString();
         string newText = alter.ColumnType ?? to.ToString();
-        if (TypeConversionRules.FailingValue(from, to) is { } failingValue)
+        if (dialect.FailingConversionValue(from, to) is { } failingValue)
         {
             if (from.IsExactDecimal && to.IsExactDecimal)
             {
@@ -340,7 +363,7 @@ internal static class ScenarioPlanner
         // The column's code page before, and the one it gets: the named collation's, or the database default's.
         int? fromCodePage = live?.CodePage ?? (from.IsString ? schema.CodePageOf(oldCol.Collation) : null);
         int? toCodePage = to.IsString ? schema.CodePageOf(alter.Collation) : null;
-        if (LossyConversionRules.LossyValue(from, to, fromCodePage, toCodePage) is not { } lossyValue)
+        if (dialect.LossyValue(from, to, fromCodePage, toCodePage) is not { } lossyValue)
         {
             yield break;
         }
@@ -398,7 +421,7 @@ internal static class ScenarioPlanner
         _ = CheckPredicate.TryParse(chk.Sql, out var predicate);
         var target = Target.Of(renames, chk.Schema, chk.Table, predicate is null ? null : [predicate.Column]);
         var table = target.Table;
-        var scenario = new MigrationScenario
+        var scenario = new MigrationScenario(renames.Schema.Dialect)
         {
             Kind = ScenarioKind.CheckConstraintViolation,
             Name = $"Rows violating new check constraint '{chk.Name}'{Note(target)}",
@@ -438,7 +461,7 @@ internal static class ScenarioPlanner
         scenario = scenario with { Columns = [column.Name] };
         if (!column.IsInsertable)
         {
-            return scenario.NotSeeded($"Column '{column.Name}' is filled by SQL Server, so no value can be planted in it.");
+            return scenario.NotSeeded($"Column '{column.Name}' is filled by the database, so no value can be planted in it.");
         }
 
         return predicate.ViolatingValue(column) is { } value
@@ -454,7 +477,7 @@ internal static class ScenarioPlanner
             || addCol.DefaultValueSql is not null
             || addCol.ComputedColumnSql is not null
             || addCol.IsRowVersion
-            || addCol["SqlServer:Identity"] is not null)
+            || renames.Schema.Dialect.IsIdentity(addCol))
         {
             return null;
         }
@@ -462,7 +485,7 @@ internal static class ScenarioPlanner
         // The new column has no N-1 name; only its table may have been renamed.
         var target = Target.Of(renames, addCol.Schema, addCol.Table);
         bool present = target.Table is not null;
-        return new MigrationScenario
+        return new MigrationScenario(renames.Schema.Dialect)
         {
             Kind = ScenarioKind.NotNullColumnAddedWithoutDefault,
             Name = $"NOT NULL column '{addCol.Name}' added to '{addCol.Table}' without a default value{Note(target)}",
@@ -495,14 +518,15 @@ internal static class ScenarioPlanner
         foreach (var column in added)
         {
             var op = column.Operation;
-            if (op.ComputedColumnSql is not null || op.IsRowVersion || op["SqlServer:Identity"] is not null)
+            if (op.ComputedColumnSql is not null || op.IsRowVersion || scenario.Dialect.IsIdentity(op))
             {
                 return scenario.NotSeeded(
-                    $"Column '{column.Name}' is added by this migration and filled by SQL Server, so no value can be planted in it.");
+                    $"Column '{column.Name}' is added by this migration and filled by the database, so no value can be planted in it.");
             }
 
-            // SQL Server leaves NULL in existing rows of a nullable column even when it has a default.
-            if (op.IsNullable)
+            // SQL Server leaves NULL in existing rows of a nullable column even when it has a default; PostgreSQL fills them with it.
+            bool hasDefault = op.DefaultValue is not null || op.DefaultValueSql is not null;
+            if (op.IsNullable && !(hasDefault && scenario.Dialect.DefaultFillsNewNullableColumn))
             {
                 if (!nullBreaks)
                 {
@@ -510,7 +534,7 @@ internal static class ScenarioPlanner
                         $"Column '{column.Name}' is added by this migration as nullable, so existing rows hold NULL in it, which this operation accepts.");
                 }
             }
-            else if (op.DefaultValue is null && op.DefaultValueSql is null)
+            else if (!hasDefault)
             {
                 return scenario.NotApplicable(
                     $"Column '{column.Name}' is added by this migration as NOT NULL without a default, which existing rows already fail.");

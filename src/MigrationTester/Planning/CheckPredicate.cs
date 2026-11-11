@@ -2,7 +2,6 @@ using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text.RegularExpressions;
 using MigrationTester.Schema;
-using MigrationTester.Seeding;
 
 namespace MigrationTester.Planning;
 
@@ -27,7 +26,7 @@ internal sealed record CheckTerm(CheckOperator Operator, IReadOnlyList<CheckLite
 /// <summary>
 /// Recognizes CHECK constraints that compare one column with literals, as most EF Core <c>HasCheckConstraint</c>
 /// predicates do: <c>[Price] &gt; 0</c>, <c>[Status] IN (N'Open', N'Closed')</c>, <c>[Qty] &gt;= 1 AND [Qty] &lt;= 100</c>
-/// or <c>[Email] IS NOT NULL</c>, also in the parenthesized form SQL Server stores, such as <c>([Price]&gt;(0))</c>.
+/// or <c>"Email" IS NOT NULL</c>, also in the parenthesized form SQL Server stores, such as <c>([Price]&gt;(0))</c>.
 /// Anything else (OR, NOT, functions, a second column, LIKE, BETWEEN, NULL literals, comments) is not recognized.
 /// </summary>
 internal sealed partial record CheckPredicate(string Column, IReadOnlyList<CheckTerm> Terms)
@@ -88,7 +87,7 @@ internal sealed partial record CheckPredicate(string Column, IReadOnlyList<Check
 
     private static string? NumberViolating(CheckTerm term, SqlType type)
     {
-        if (NumericRange(type) is not { } range || term.Literals.Any(static l => l.Number is null))
+        if (type.Dialect.NumericRange(type) is not { } range || term.Literals.Any(static l => l.Number is null))
         {
             return null;
         }
@@ -121,8 +120,7 @@ internal sealed partial record CheckPredicate(string Column, IReadOnlyList<Check
 
     private static string? TextViolating(CheckTerm term, SqlType type)
     {
-        // text and ntext cannot be compared at all.
-        if (!type.IsString || type.Name is "text" or "ntext" || term.Literals.Any(static l => l.Text is null))
+        if (!type.IsString || !type.IsComparable || term.Literals.Any(static l => l.Text is null))
         {
             return null;
         }
@@ -138,7 +136,7 @@ internal sealed partial record CheckPredicate(string Column, IReadOnlyList<Check
             _ => []
         };
 
-        return candidates.Where(c => Fits(c, type)).Select(SqlLiterals.NString).FirstOrDefault();
+        return candidates.Where(c => Fits(c, type)).Select(type.Dialect.String).FirstOrDefault();
     }
 
     /// <summary>Equal under some collation: case, accents, width and trailing spaces ignored.</summary>
@@ -153,35 +151,6 @@ internal sealed partial record CheckPredicate(string Column, IReadOnlyList<Check
     private static bool Fits(string text, SqlType type)
         => (type.Length is not int max || max == SqlType.Max || text.Length <= max)
             && (type.IsUnicodeString || text.All(char.IsAscii));
-
-    /// <summary>Smallest and largest value, and decimal places (null for float and real), of a numeric column.</summary>
-    private static (decimal Min, decimal Max, int? Scale)? NumericRange(SqlType type) => type.Name switch
-    {
-        "bit" => (0, 1, 0),
-        "tinyint" => (byte.MinValue, byte.MaxValue, 0),
-        "smallint" => (short.MinValue, short.MaxValue, 0),
-        "int" => (int.MinValue, int.MaxValue, 0),
-        "bigint" => (long.MinValue, long.MaxValue, 0),
-        "smallmoney" => (-214_748.3648m, 214_748.3647m, 4),
-        "money" => (-922_337_203_685_477.5808m, 922_337_203_685_477.5807m, 4),
-        "decimal" or "numeric" => DecimalRange(type.Precision ?? 18, type.Scale ?? 0),
-        "float" or "real" => (decimal.MinValue, decimal.MaxValue, null),
-        _ => null
-    };
-
-    private static (decimal, decimal, int?) DecimalRange(int precision, int scale)
-    {
-        // System.Decimal has at most 28 decimal places, and literals stay below 10^28.
-        scale = Math.Min(scale, 28);
-        int integerDigits = precision - scale;
-        if (integerDigits >= 28)
-        {
-            return (decimal.MinValue, decimal.MaxValue, scale);
-        }
-
-        decimal max = Pow10(integerDigits) - Step(scale);
-        return (-max, max, scale);
-    }
 
     private static decimal Step(int? scale) => scale is int s ? 1m / Pow10(s) : 1m;
 

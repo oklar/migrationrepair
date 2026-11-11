@@ -4,6 +4,21 @@ All notable changes to MigrationTester. Versions follow [Semantic Versioning](ht
 
 ## [Unreleased]
 
+### Added
+
+- PostgreSQL, through Npgsql.EntityFrameworkCore.PostgreSQL. The runner picks the database from the context's provider, so a context configured with `UseNpgsql(...)` works with the same options and API. The package takes no dependency on Npgsql: it reads PostgreSQL's errors through `DbException.SqlState`. What differs from SQL Server:
+  - Duplicates for a unique key with nullable columns get a value in them, since PostgreSQL lets any number of rows hold NULL in a unique key, and a unique key over a column added as nullable in the same `Up()` is `NotApplicable`.
+  - A nullable column added with a default holds the default in existing rows, which is the data later operations in the same `Up()` are tested on.
+  - Type changes that fail are planted only between numbers. EF writes `ALTER COLUMN ... TYPE` without `USING`, so a change from text to another type fails whatever the data.
+  - Type changes that change data (`ColumnTypeConversionLossy`) are numbers rounded to fewer decimals or to a binary floating-point value, and timestamps losing their time of day, their date or fractional-second digits. The script runs one statement at a time, so the values are read right around the `ALTER COLUMN ... TYPE` statement.
+  - Seed statements in the rolled-back transaction run under savepoints, since one failed statement aborts a PostgreSQL transaction. `CREATE INDEX CONCURRENTLY` makes a migration run outside a transaction, as `suppressTransaction` does.
+  - Identity and serial counters move to the seed key range with `setval`, and repair hints are written in PostgreSQL's SQL.
+
+### Changed
+
+- The reasons for scenarios on columns the database fills itself say "filled by the database" instead of "filled by SQL Server", and the error for an unsupported provider names both supported ones.
+- Inside the library, SQL Server's catalog queries, connection string handling, error numbers, value comparison around `ALTER COLUMN` and SQL moved behind an internal `DatabaseProvider` and `SqlDialect`, which PostgreSQL implements too. SQL Server's behavior is unchanged.
+
 ## [0.2.0] - 2026-11-11
 
 Migrations whose column type change silently changes data now fail.

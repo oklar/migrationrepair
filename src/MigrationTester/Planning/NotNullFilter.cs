@@ -5,13 +5,14 @@ namespace MigrationTester.Planning;
 
 /// <summary>
 /// Recognizes index filters that only require columns to be non-NULL, such as the
-/// <c>[Email] IS NOT NULL</c> EF Core generates for unique indexes on nullable columns.
+/// <c>[Email] IS NOT NULL</c> EF Core generates for unique indexes on nullable columns in SQL Server.
 /// </summary>
 internal static partial class NotNullFilter
 {
     /// <summary>
-    /// True when <paramref name="filter"/> is one or more <c>[column] IS NOT NULL</c> terms joined by AND,
-    /// optionally parenthesized as SQL Server stores it, e.g. <c>([A] IS NOT NULL AND [B] IS NOT NULL)</c>.
+    /// True when <paramref name="filter"/> is one or more <c>[column] IS NOT NULL</c> or <c>"column" IS NOT NULL</c>
+    /// terms joined by AND, optionally parenthesized as the database stores it, e.g.
+    /// <c>([A] IS NOT NULL AND [B] IS NOT NULL)</c>.
     /// </summary>
     public static bool TryParse(string? filter, [NotNullWhen(true)] out IReadOnlyList<string>? columns)
     {
@@ -30,7 +31,10 @@ internal static partial class NotNullFilter
                 return false;
             }
 
-            found.Add(match.Groups["bracketed"].Success ? match.Groups["bracketed"].Value.Replace("]]", "]") : match.Groups["plain"].Value);
+            found.Add(
+                match.Groups["bracketed"].Success ? match.Groups["bracketed"].Value.Replace("]]", "]")
+                : match.Groups["quoted"].Success ? match.Groups["quoted"].Value.Replace("\"\"", "\"")
+                : match.Groups["plain"].Value);
         }
 
         columns = found;
@@ -72,6 +76,6 @@ internal static partial class NotNullFilter
     [GeneratedRegex(@"\s+AND\s+", RegexOptions.IgnoreCase)]
     private static partial Regex AndSeparator();
 
-    [GeneratedRegex(@"^(?:\[(?<bracketed>(?:[^\]]|\]\])+)\]|(?<plain>\w+))\s+IS\s+NOT\s+NULL$", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"^(?:\[(?<bracketed>(?:[^\]]|\]\])+)\]|""(?<quoted>(?:[^""]|"""")+)""|(?<plain>\w+))\s+IS\s+NOT\s+NULL$", RegexOptions.IgnoreCase)]
     private static partial Regex IsNotNullTerm();
 }

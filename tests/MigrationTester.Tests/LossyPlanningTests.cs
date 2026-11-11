@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore.Migrations.Operations;
 using MigrationTester.Planning;
 using MigrationTester.Schema;
 using Xunit;
+using MigrationTester.Providers.SqlServer;
 
 namespace MigrationTester.Tests;
 
@@ -48,6 +49,7 @@ public sealed class LossyPlanningTests
     {
         var schema = new RelationalSchemaModel
         {
+            Dialect = SqlServerDialect.Instance,
             DefaultSchema = "dbo",
             Tables = [TestSchema.Table("Items", Column("Latin", "varchar(20)", codePage: 1252))],
             CodePages = new Dictionary<string, int> { ["Cyrillic_General_CI_AS"] = 1251, ["Latin1_General_100_CI_AS_SC_UTF8"] = 65001 }
@@ -70,6 +72,7 @@ public sealed class LossyPlanningTests
     {
         var schema = new RelationalSchemaModel
         {
+            Dialect = SqlServerDialect.Instance,
             DefaultSchema = "dbo",
             Tables = [TestSchema.Table("Items", Column("Name", "varchar(20)", codePage: 65001))],
             DatabaseCodePage = 1252
@@ -159,7 +162,7 @@ public sealed class LossyPlanningTests
     private static ColumnMetadata Column(string name, string type, int? codePage = null) => new()
     {
         Name = name,
-        Type = SqlType.Parse(type)!.Value,
+        Type = SqlServerDialect.Instance.ParseType(type)!.Value,
         IsNullable = true,
         CodePage = codePage
     };

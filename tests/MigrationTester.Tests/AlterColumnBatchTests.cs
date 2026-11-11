@@ -4,6 +4,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
 using MigrationTester.Runner;
 using Xunit;
+using Microsoft.EntityFrameworkCore.Storage;
+using MigrationTester.Providers.SqlServer;
 
 namespace MigrationTester.Tests;
 
@@ -95,7 +97,7 @@ public sealed class AlterColumnBatchTests
             "ALTER TABLE [Contracts] ALTER COLUMN [Amount] decimal(18,2) NOT NULL;"
         ];
 
-        var found = ColumnCheckpoint.AlterBatches([alter], batches);
+        var found = AlterBatches([alter], batches);
 
         Assert.Equal(2, found[alter]);
     }
@@ -105,7 +107,7 @@ public sealed class AlterColumnBatchTests
     {
         var alter = Alter("Products", "Price", "decimal(18,2)", "decimal(18,4)");
 
-        var found = ColumnCheckpoint.AlterBatches([alter], ["SELECT 1;"]);
+        var found = AlterBatches([alter], ["SELECT 1;"]);
 
         Assert.Empty(found);
     }
@@ -129,6 +131,14 @@ public sealed class AlterColumnBatchTests
             .Generate(operations)
             .Select(static c => c.CommandText.Trim())
             .ToList();
-        return (batches, ColumnCheckpoint.AlterBatches(operations, batches));
+        return (batches, AlterBatches(operations, batches));
+    }
+
+    /// <summary>The batches the SQL Server provider finds, quoting as EF Core's SQL Server generator does.</summary>
+    private static Dictionary<AlterColumnOperation, int> AlterBatches(IReadOnlyList<MigrationOperation> operations, IReadOnlyList<string> batches)
+    {
+        using var context = new TestDbContext(
+            new DbContextOptionsBuilder<TestDbContext>().UseSqlServer("Server=unused;Database=unused").Options);
+        return ColumnCheckpoint.AlterBatches(SqlServerProvider.Instance, context.GetService<ISqlGenerationHelper>(), operations, batches);
     }
 }
