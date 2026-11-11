@@ -4,6 +4,10 @@ All notable changes to MigrationTester. Versions follow [Semantic Versioning](ht
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-11
+
+Migrations whose column type change silently changes data now fail.
+
 ### Added
 
 - Column type changes that SQL Server converts without an error but that change values now fail the migration, as `ScenarioKind.ColumnTypeConversionLossy`. One row gets a value the change alters, such as an emoji in a column going from `nvarchar` to `varchar` (it becomes `??`), `0.0001` when a `decimal` scale shrinks to 2, a time of day in a column becoming `date`, an offset in a `datetimeoffset` becoming `datetime2`, `'007'` in text becoming `int`, or `1234567.891` in a `float` becoming text. Right before the `ALTER COLUMN` MigrationTester reads the column's values, and right after it fails the step if one does not come back when converted to the old type. The step's summary shows each value and what it became.
@@ -101,7 +105,8 @@ First preview release.
 - Each migration runs on its planted data in a transaction that is rolled back, so a run costs about two migration runs per migration; `RebuildDatabaseForEachMigration` recreates the database for every migration instead.
 - `RequireAllScenariosSeeded` to fail migrations whose scenarios could not all be planted.
 
-[Unreleased]: https://github.com/oklar/migrationtester/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/oklar/migrationtester/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/oklar/migrationtester/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/oklar/migrationtester/compare/v0.1.0-preview.5...v0.1.0
 [0.1.0-preview.5]: https://github.com/oklar/migrationtester/compare/v0.1.0-preview.4...v0.1.0-preview.5
 [0.1.0-preview.4]: https://github.com/oklar/migrationtester/compare/v0.1.0-preview.3...v0.1.0-preview.4

@@ -70,6 +70,7 @@ MigrationTester.MigrationTestRunner
 MigrationTester.ScenarioKind
 MigrationTester.ScenarioKind.CheckConstraintViolation = 4 -> MigrationTester.ScenarioKind
 MigrationTester.ScenarioKind.ColumnTypeConversionIncompatible = 6 -> MigrationTester.ScenarioKind
+MigrationTester.ScenarioKind.ColumnTypeConversionLossy = 8 -> MigrationTester.ScenarioKind
 MigrationTester.ScenarioKind.DecimalPrecisionOverflow = 7 -> MigrationTester.ScenarioKind
 MigrationTester.ScenarioKind.DuplicateUniqueIndexOrConstraint = 0 -> MigrationTester.ScenarioKind
 MigrationTester.ScenarioKind.ForeignKeyOrphan = 1 -> MigrationTester.ScenarioKind
