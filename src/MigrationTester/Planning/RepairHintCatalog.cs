@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
+using MigrationTester.Schema;
 using MigrationTester.Seeding;
 
 namespace MigrationTester.Planning;
@@ -20,7 +21,51 @@ internal static class RepairHintCatalog
             ScenarioKind.NotNullColumnAddedWithoutDefault => NotNullAddColumn(scenario),
             ScenarioKind.ColumnTypeConversionIncompatible => TypeConversion(scenario),
             ScenarioKind.DecimalPrecisionOverflow => PrecisionOverflow(scenario),
+            ScenarioKind.ColumnTypeConversionLossy => LossyConversion(scenario),
             _ => "Review migration and pre-migration data."
+        };
+    }
+
+    /// <summary>
+    /// The statement that makes the loss explicit: storing in the old column what the new type keeps, so the
+    /// <c>ALTER COLUMN</c> after it changes nothing. It runs right before the <c>AlterColumn</c>, so it uses the names
+    /// the operation uses.
+    /// </summary>
+    private static string LossyConversion(MigrationScenario s)
+    {
+        var alter = s.SourceOperation as AlterColumnOperation;
+        string col = SqlDialect.Q(alter?.Name ?? s.Columns[0]);
+        string table = alter is null ? SqlDialect.Q(s.Schema, s.Table) : SqlDialect.Q(alter.Schema, alter.Table);
+        string oldT = s.OldColumnType ?? "?";
+        string newT = s.NewColumnType ?? "?";
+        var from = SqlType.Parse(oldT);
+        var to = SqlType.Parse(newT);
+
+        string keep = (from, to) switch
+        {
+            ({ IsString: true }, { IsString: true }) =>
+                $"-- To keep every character, keep a Unicode type (nvarchar), or give {col} a UTF-8 collation (e.g. Latin1_General_100_CI_AS_SC_UTF8).",
+            ({ Name: "datetimeoffset" }, _) =>
+                $"-- To keep the moment in time instead of the local clock time, convert to UTC first: UPDATE {table} SET {col} = SWITCHOFFSET({col}, '+00:00');",
+            ({ Name: "float" or "real" or "money" or "smallmoney" or "datetime" } source, { IsString: true }) =>
+                $"""
+                -- To keep every digit, add the new column instead, copy with CONVERT({newT}, {col}, {Style(source)}), drop {col} and rename the new one.
+                """,
+            _ => "-- To keep every value, keep a type that holds them."
+        };
+
+        return $"""
+            -- {col} changes from {oldT} to {newT}, and SQL Server changes values the new type cannot hold, without an error.
+            -- If that is intended, change them yourself before the AlterColumn (migrationBuilder.Sql), so the migration says so:
+            UPDATE {table} SET {col} = CAST(CAST({col} AS {newT}) AS {oldT}) WHERE {col} IS NOT NULL;
+            {keep}
+            """;
+
+        static string Style(SqlType type) => type.Name switch
+        {
+            "float" or "real" => "3",
+            "money" or "smallmoney" => "2",
+            _ => "121"
         };
     }
 

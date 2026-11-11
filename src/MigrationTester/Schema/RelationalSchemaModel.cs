@@ -30,6 +30,12 @@ internal sealed class ColumnMetadata
 
     public bool HasDefault { get; init; }
 
+    /// <summary>
+    /// Code page of a <c>char</c>, <c>varchar</c> or <c>text</c> column's collation (65001 for a UTF-8 collation); null
+    /// for other types.
+    /// </summary>
+    public int? CodePage { get; init; }
+
     /// <summary>False for columns SQL Server fills itself (identity, rowversion, computed, period columns).</summary>
     public bool IsInsertable => !IsIdentity && !IsComputed && !IsGeneratedAlways && !Type.IsRowVersion;
 }
@@ -114,6 +120,21 @@ internal sealed class RelationalSchemaModel
     public required string DefaultSchema { get; init; }
 
     public required IReadOnlyList<TableMetadata> Tables { get; init; }
+
+    /// <summary>Code page of the database's default collation, which a column gets when no collation is named.</summary>
+    public int DatabaseCodePage { get; init; } = 1252;
+
+    /// <summary>Code pages of the collations the migration names, by collation name.</summary>
+    public IReadOnlyDictionary<string, int> CodePages { get; init; } = new Dictionary<string, int>();
+
+    /// <summary>
+    /// Code page of <paramref name="collation"/>, the database default's when it is null, or null when the collation
+    /// is unknown.
+    /// </summary>
+    public int? CodePageOf(string? collation)
+        => collation is null ? DatabaseCodePage
+            : CodePages.TryGetValue(collation, out int codePage) ? codePage
+            : null;
 
     public TableName Resolve(string? schema, string table) => new(schema ?? DefaultSchema, table);
 

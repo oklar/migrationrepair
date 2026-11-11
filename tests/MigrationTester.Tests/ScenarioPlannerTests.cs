@@ -180,7 +180,7 @@ public sealed class ScenarioPlannerTests
     [InlineData("[Missing] > 0", "Column 'Missing' does not exist at N-1")]
     [InlineData("[Total] > 0", "Column 'Total' is filled by SQL Server")]
     [InlineData("[Small] >= 0", "No tinyint value that breaks '[Small] >= 0' could be generated")]
-    [InlineData("[Start] > '2020-01-01'", "No datetime2 value")]
+    [InlineData("[Start] > '2020-01-01'", "No datetime2(7) value")]
     public void Plan_check_constraint_without_a_known_breaking_value_is_not_seeded(string sql, string reason)
     {
         var check = new AddCheckConstraintOperation { Name = "CK_Items", Table = "Items", Sql = sql };
@@ -310,7 +310,7 @@ public sealed class ScenarioPlannerTests
         var schema = TestSchema.WithTables("Items");
         var scenarios = ScenarioPlanner.Plan(ops, schema);
 
-        var s = Assert.Single(scenarios);
+        var s = Assert.Single(scenarios, static s => s.Kind != ScenarioKind.ColumnTypeConversionLossy);
         Assert.Equal(ScenarioKind.ColumnTypeConversionIncompatible, s.Kind);
         Assert.Equal(ScenarioStatus.Planted, s.Status);
         Assert.Equal("nvarchar(100)", s.OldColumnType);
@@ -356,7 +356,8 @@ public sealed class ScenarioPlannerTests
         var schema = TestSchema.WithTables("Items");
         var scenarios = ScenarioPlanner.Plan(ops, schema);
 
-        var s = Assert.Single(scenarios);
+        // Shrinking the scale from 6 to 2 also changes values, which is a lossy scenario of its own.
+        var s = Assert.Single(scenarios, static s => s.Kind != ScenarioKind.ColumnTypeConversionLossy);
         Assert.Equal(ScenarioKind.DecimalPrecisionOverflow, s.Kind);
         Assert.Equal(18, s.OldPrecision);
         Assert.Equal(10, s.NewPrecision);
@@ -571,14 +572,16 @@ public sealed class ScenarioPlannerTests
     [InlineData("datetime2", "date")]
     [InlineData("decimal(18,4)", "decimal(18,2)")]
     [InlineData("nvarchar(100)", "varchar(100)")]
-    public void Plan_conversions_that_cannot_fail_produce_no_scenario(string oldType, string newType)
+    public void Plan_conversions_that_cannot_fail_only_get_a_lossy_scenario(string oldType, string newType)
     {
+        // SQL Server converts every value, but changes some: no failing value, only one the change alters.
         var alter = new AlterColumnOperation { Name = "Value", Table = "Items", ColumnType = newType };
         alter.OldColumn.ColumnType = oldType;
 
         var scenarios = ScenarioPlanner.Plan([alter], TestSchema.WithTables("Items"));
 
-        Assert.Empty(scenarios);
+        var s = Assert.Single(scenarios);
+        Assert.Equal(ScenarioKind.ColumnTypeConversionLossy, s.Kind);
     }
 
     [Fact]

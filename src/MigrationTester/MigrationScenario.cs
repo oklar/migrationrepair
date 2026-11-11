@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
 using MigrationTester.Planning;
+using MigrationTester.Runner;
 
 namespace MigrationTester;
 
@@ -85,6 +86,12 @@ public sealed record MigrationScenario
     /// is the data: the table's baseline row is all the scenario needs.
     /// </summary>
     internal bool ExistingRowsSuffice { get; init; }
+
+    /// <summary>
+    /// For <see cref="ScenarioKind.ColumnTypeConversionLossy"/>: a value the <c>ALTER COLUMN</c> changed, or null when
+    /// every value came back (or the statement did not run).
+    /// </summary>
+    internal ColumnChange? Change { get; init; }
 
     internal MigrationScenario NotApplicable(string reason) => this with { Status = ScenarioStatus.NotApplicable, Reason = reason };
 

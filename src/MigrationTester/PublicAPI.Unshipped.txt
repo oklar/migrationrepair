@@ -1,1 +1,2 @@
 #nullable enable
+MigrationTester.ScenarioKind.ColumnTypeConversionLossy = 8 -> MigrationTester.ScenarioKind

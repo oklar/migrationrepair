@@ -22,9 +22,9 @@ internal static class ScenarioPlanner
         var list = new List<MigrationScenario>();
         var renames = new RenameMap(schema);
 
-        foreach (var op in operations)
+        for (int index = 0; index < operations.Count; index++)
         {
-            switch (op)
+            switch (operations[index])
             {
                 case RenameTableOperation renameTable:
                     renames.Rename(renameTable);
@@ -43,7 +43,7 @@ internal static class ScenarioPlanner
                     list.Add(ForeignKeyScenario(fk, renames));
                     break;
                 case AlterColumnOperation alter:
-                    list.AddRange(AlterColumnScenarios(alter, renames));
+                    list.AddRange(AlterColumnScenarios(alter, renames, schema, DroppedLater(operations, index)));
                     break;
                 case AddCheckConstraintOperation chk:
                     list.Add(CheckScenario(chk, renames));
@@ -249,7 +249,9 @@ internal static class ScenarioPlanner
 
     private static IEnumerable<MigrationScenario> AlterColumnScenarios(
         AlterColumnOperation alter,
-        RenameMap renames)
+        RenameMap renames,
+        RelationalSchemaModel schema,
+        bool droppedLater)
     {
         var target = Target.Of(renames, alter.Schema, alter.Table, [alter.Name]);
         var table = target.Table;
@@ -300,38 +302,94 @@ internal static class ScenarioPlanner
             }, target, nullBreaks: false);
         }
 
-        if (oldType is not { } from || newType is not { } to
-            || TypeConversionRules.FailingValue(from, to) is not { } failingValue)
+        if (oldType is not { } from || newType is not { } to)
         {
             yield break;
         }
 
-        if (from.IsExactDecimal && to.IsExactDecimal)
+        string oldText = live is null ? oldCol.ColumnType ?? from.ToString() : from.ToString();
+        string newText = alter.ColumnType ?? to.ToString();
+        if (TypeConversionRules.FailingValue(from, to) is { } failingValue)
         {
-            yield return OnNewColumns(baseScenario with
+            if (from.IsExactDecimal && to.IsExactDecimal)
             {
-                Kind = ScenarioKind.DecimalPrecisionOverflow,
-                Name = $"Value overflow when precision shrinks for '{alter.Name}'{note}",
-                OldPrecision = from.Precision,
-                NewPrecision = to.Precision,
-                OldScale = from.Scale,
-                NewScale = to.Scale,
-                SeedValue = failingValue
-            }, target, nullBreaks: false);
+                yield return OnNewColumns(baseScenario with
+                {
+                    Kind = ScenarioKind.DecimalPrecisionOverflow,
+                    Name = $"Value overflow when precision shrinks for '{alter.Name}'{note}",
+                    OldPrecision = from.Precision,
+                    NewPrecision = to.Precision,
+                    OldScale = from.Scale,
+                    NewScale = to.Scale,
+                    SeedValue = failingValue
+                }, target, nullBreaks: false);
+            }
+            else
+            {
+                yield return OnNewColumns(baseScenario with
+                {
+                    Kind = ScenarioKind.ColumnTypeConversionIncompatible,
+                    Name = $"Existing data in '{alter.Name}' may not convert from {oldText} to {newText}{note}",
+                    OldColumnType = oldText,
+                    NewColumnType = newText,
+                    SeedValue = failingValue
+                }, target, nullBreaks: false);
+            }
         }
-        else
+
+        // The column's code page before, and the one it gets: the named collation's, or the database default's.
+        int? fromCodePage = live?.CodePage ?? (from.IsString ? schema.CodePageOf(oldCol.Collation) : null);
+        int? toCodePage = to.IsString ? schema.CodePageOf(alter.Collation) : null;
+        if (LossyConversionRules.LossyValue(from, to, fromCodePage, toCodePage) is not { } lossyValue)
         {
-            string oldText = live is null ? oldCol.ColumnType ?? from.ToString() : from.ToString();
-            string newText = alter.ColumnType ?? to.ToString();
-            yield return OnNewColumns(baseScenario with
-            {
-                Kind = ScenarioKind.ColumnTypeConversionIncompatible,
-                Name = $"Existing data in '{alter.Name}' may not convert from {oldText} to {newText}{note}",
-                OldColumnType = oldText,
-                NewColumnType = newText,
-                SeedValue = failingValue
-            }, target, nullBreaks: false);
+            yield break;
         }
+
+        var lossy = baseScenario with
+        {
+            Kind = ScenarioKind.ColumnTypeConversionLossy,
+            Name = $"Value in '{alter.Name}' that converting from {oldText} to {newText} changes{note}",
+            OldColumnType = oldText,
+            NewColumnType = newText,
+            SeedValue = lossyValue
+        };
+        yield return droppedLater && lossy.Status == ScenarioStatus.Planted
+            ? lossy.NotApplicable($"Column '{alter.Name}' is dropped later in this migration, which deletes its values on purpose.")
+            : OnNewColumns(lossy, target, nullBreaks: false);
+    }
+
+    /// <summary>
+    /// Whether an operation after <paramref name="index"/> drops the column that the <c>AlterColumn</c> at
+    /// <paramref name="index"/> changes, or its table, following renames in between.
+    /// </summary>
+    private static bool DroppedLater(IReadOnlyList<MigrationOperation> operations, int index)
+    {
+        var alter = (AlterColumnOperation)operations[index];
+        string? schema = alter.Schema;
+        string table = alter.Table;
+        string column = alter.Name;
+        for (int i = index + 1; i < operations.Count; i++)
+        {
+            switch (operations[i])
+            {
+                case RenameColumnOperation r when SameTable(r.Schema, r.Table) && Same(r.Name, column):
+                    column = r.NewName;
+                    break;
+                case RenameTableOperation r when SameTable(r.Schema, r.Name):
+                    schema = r.NewSchema ?? schema;
+                    table = r.NewName ?? table;
+                    break;
+                case DropColumnOperation d when SameTable(d.Schema, d.Table) && Same(d.Name, column):
+                case DropTableOperation t when SameTable(t.Schema, t.Name):
+                    return true;
+            }
+        }
+
+        return false;
+
+        bool SameTable(string? otherSchema, string otherTable) => Same(otherSchema ?? "", schema ?? "") && Same(otherTable, table);
+
+        static bool Same(string a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
     }
 
     private static MigrationScenario CheckScenario(AddCheckConstraintOperation chk, RenameMap renames)

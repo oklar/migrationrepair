@@ -36,7 +36,8 @@ public sealed class ModeEquivalenceTests
         ["JoinTable"] = retry => new JoinTableContext(Build<JoinTableContext>(retry)),
         ["DeskGuid"] = retry => new DeskGuidContext(Build<DeskGuidContext>(retry)),
         ["DeskIdentity"] = retry => new DeskIdentityContext(Build<DeskIdentityContext>(retry)),
-        ["BrokenFirst"] = retry => new BrokenFirstContext(Build<BrokenFirstContext>(retry))
+        ["BrokenFirst"] = retry => new BrokenFirstContext(Build<BrokenFirstContext>(retry)),
+        ["Lossy"] = retry => new LossyContext(Build<LossyContext>(retry))
     };
 
     public static TheoryData<string> Cases => new(Contexts.Keys);
@@ -70,7 +71,8 @@ public sealed class ModeEquivalenceTests
     [
         .. report.Steps.Select(static s =>
             $"{s.MigrationId}: {s.Outcome}; "
-            + string.Join(", ", s.Scenarios.Select(static c => $"{c.Kind}={c.Status}"))
+            + string.Join(", ", s.Scenarios.Select(static c => $"{c.Kind}={c.Status}"
+                + (c.Change is { } change ? $" ({change.Before} -> {change.After})" : "")))
             + " | failing: " + string.Join(", ", s.FailingScenarios.Select(static c => c.Kind)))
     ];
 

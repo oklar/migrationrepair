@@ -53,6 +53,11 @@ internal static class ReportFormatter
                 sb.AppendLine(ErrorText(step.Exception));
                 break;
 
+            case MigrationStepOutcome.Failed when step.Exception is null:
+                sb.AppendLine($"FAILED {step.MigrationId}: Up() changed data that is valid before it runs.");
+                AppendFailingScenarios(sb, step);
+                break;
+
             case MigrationStepOutcome.Failed:
                 sb.AppendLine($"FAILED {step.MigrationId}: Up() failed on data that is valid before it runs.");
                 sb.AppendLine(ErrorText(step.Exception));
@@ -99,7 +104,9 @@ internal static class ReportFormatter
             sb.AppendLine("Broke on:");
             foreach (var s in step.FailingScenarios)
             {
-                sb.AppendLine($" - [{s.Kind}] {s.Name}");
+                sb.AppendLine(s.Change is { } change
+                    ? $" - [{s.Kind}] {s.Name}: {change.Before} became {change.After ?? "NULL"}"
+                    : $" - [{s.Kind}] {s.Name}");
             }
 
             sb.AppendLine();

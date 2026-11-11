@@ -16,15 +16,19 @@ public sealed class MigrationStepResult
     /// <summary>Whether the migration passed, failed on the planted data, or could not be tested.</summary>
     public MigrationStepOutcome Outcome { get; internal init; }
 
-    /// <summary>The migration's error (<see cref="MigrationStepOutcome.Failed"/>) or the setup error (<see cref="MigrationStepOutcome.Error"/>).</summary>
+    /// <summary>
+    /// The migration's error (<see cref="MigrationStepOutcome.Failed"/>; null when it failed only by changing planted
+    /// values) or the setup error (<see cref="MigrationStepOutcome.Error"/>).
+    /// </summary>
     public Exception? Exception { get; internal init; }
 
     /// <summary>Every scenario derived from the migration's <c>Up()</c>, with its <see cref="MigrationScenario.Status"/>.</summary>
     public IReadOnlyList<MigrationScenario> Scenarios { get; internal init; } = [];
 
     /// <summary>
-    /// Planted scenarios the failure matches, judged by SQL Server's error numbers and the names in its messages.
-    /// Empty when the step passed or when the error matches none of them.
+    /// Planted scenarios the failure matches: those whose <c>ALTER COLUMN</c> changed a value
+    /// (<see cref="ScenarioKind.ColumnTypeConversionLossy"/>), and those SQL Server's error numbers and the names in its
+    /// messages point to. Empty when the step passed or when the error matches none of them.
     /// </summary>
     public IReadOnlyList<MigrationScenario> FailingScenarios { get; internal init; } = [];
 

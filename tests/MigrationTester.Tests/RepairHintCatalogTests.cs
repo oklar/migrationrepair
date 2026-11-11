@@ -172,4 +172,31 @@ public sealed class RepairHintCatalogTests
         Assert.Contains("ROUND", hint);
         Assert.Contains("[Price]", hint);
     }
+
+    [Theory]
+    [InlineData("decimal(18,4)", "decimal(18,2)", "To keep every value, keep a type that holds them.")]
+    [InlineData("nvarchar(20)", "varchar(20)", "UTF-8 collation")]
+    [InlineData("datetimeoffset(7)", "datetime2(7)", "SWITCHOFFSET([Value], '+00:00')")]
+    [InlineData("float", "nvarchar(30)", "CONVERT(nvarchar(30), [Value], 3)")]
+    [InlineData("money", "nvarchar(30)", "CONVERT(nvarchar(30), [Value], 2)")]
+    [InlineData("datetime", "nvarchar(30)", "CONVERT(nvarchar(30), [Value], 121)")]
+    public void ForScenario_lossy_conversion_gives_the_update_that_makes_the_loss_explicit(string oldType, string newType, string alternative)
+    {
+        // The names at the AlterColumn (after a rename earlier in Up()), not the N-1 names the scenario holds.
+        var scenario = new MigrationScenario
+        {
+            Kind = ScenarioKind.ColumnTypeConversionLossy,
+            Name = "test",
+            Table = "OldReadings",
+            Columns = ["OldValue"],
+            OldColumnType = oldType,
+            NewColumnType = newType,
+            SourceOperation = new AlterColumnOperation { Schema = "lab", Table = "Readings", Name = "Value" }
+        };
+
+        string hint = RepairHintCatalog.ForScenario(scenario);
+
+        Assert.Contains($"UPDATE [lab].[Readings] SET [Value] = CAST(CAST([Value] AS {newType}) AS {oldType}) WHERE [Value] IS NOT NULL;", hint);
+        Assert.Contains(alternative, hint);
+    }
 }

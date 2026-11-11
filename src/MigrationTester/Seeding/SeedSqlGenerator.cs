@@ -435,6 +435,7 @@ internal static class SeedSqlGenerator
             case ScenarioKind.ColumnTypeConversionIncompatible:
             case ScenarioKind.DecimalPrecisionOverflow:
             case ScenarioKind.CheckConstraintViolation:
+            case ScenarioKind.ColumnTypeConversionLossy:
                 if (!FindColumn(scenario, table, out var planned, out failure))
                 {
                     return false;
@@ -442,9 +443,12 @@ internal static class SeedSqlGenerator
 
                 if (scenario.SeedValue is null)
                 {
-                    failure = scenario.Kind == ScenarioKind.CheckConstraintViolation
-                        ? "no value is known that breaks this check constraint"
-                        : "no value is known that fails this conversion";
+                    failure = scenario.Kind switch
+                    {
+                        ScenarioKind.CheckConstraintViolation => "no value is known that breaks this check constraint",
+                        ScenarioKind.ColumnTypeConversionLossy => "no value is known that this conversion changes",
+                        _ => "no value is known that fails this conversion"
+                    };
                     return false;
                 }
 
